@@ -1,0 +1,51 @@
+@import "tailwindcss";
+
+/* 期末專案用：簡潔、偏行動支付的底色與字體 */
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(1200px 600px at 50% -20%, rgba(59, 130, 246, 0.20), rgba(255, 255, 255, 0)) ,
+    linear-gradient(180deg, #0b1220 0%, #070a12 60%, #05060c 100%);
+  color: white;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial,
+    "Apple Color Emoji", "Segoe UI Emoji";
+}
+
+/* 讓輸入框在暗底色下更像「App」 */
+input::placeholder {
+  color: rgba(255, 255, 255, 0.45);
+}
+
+@layer components {
+  .ui-card {
+    @apply rounded-3xl border border-white/10 bg-white/[0.06] p-5 backdrop-blur;
+  }
+
+  .ui-card-subtle {
+    @apply rounded-2xl border border-white/10 bg-black/20 p-3;
+  }
+
+  .ui-label {
+    @apply text-xs text-white/60;
+  }
+
+  .ui-title {
+    @apply mt-1 text-xl font-semibold tracking-tight;
+  }
+
+  .ui-input {
+    @apply w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-white outline-none ring-0 focus:border-white/20;
+  }
+
+  .ui-button-primary {
+    @apply rounded-2xl bg-blue-500 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-400 active:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  .ui-button-secondary {
+    @apply rounded-2xl bg-white/10 px-4 py-3 text-sm font-semibold text-white hover:bg-white/15 active:bg-white/20 disabled:cursor-not-allowed disabled:opacity-60;
+  }
+}
