@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
-import { usePrivy, useWallets } from '@privy-io/react-auth'
+import { usePrivy, useWallets, useSendTransaction } from '@privy-io/react-auth'
 import { formatEther, parseEther, encodeFunctionData } from 'viem'
 import { baseSepolia } from 'viem/chains'
 import { hashEmail } from '../lib/email'
@@ -162,12 +162,11 @@ function DepositModal({ open, email, emailHash, externalWallet, walletsReady, on
 }
 
 // ─── SendModal ─────────────────────────────────────────────────────────────
-// Uses Privy embedded wallet — gas sponsored by Privy, no popup
-function SendModal({ open, fromEmailHash, balanceWei, privyWallet, onClose, onSuccess }: {
+// Uses Privy useSendTransaction with sponsor:true + showWalletUIs:false → zero popup, gas sponsored
+function SendModal({ open, fromEmailHash, balanceWei, onClose, onSuccess }: {
   open: boolean
   fromEmailHash: string
   balanceWei: bigint | null
-  privyWallet: any
   onClose: () => void
   onSuccess: () => void
 }) {
@@ -192,10 +191,11 @@ function SendModal({ open, fromEmailHash, balanceWei, privyWallet, onClose, onSu
     if (balanceWei !== null) setAmount(formatEther(balanceWei))
   }
 
+  const { sendTransaction } = useSendTransaction()
+
   async function onSend() {
     setStatus(''); setIsError(false)
     if (!toEmail.trim() || !amount.trim()) { setStatus('Please fill in all fields.'); setIsError(true); return }
-    if (!privyWallet) { setStatus('Wallet not ready. Try signing out and back in.'); setIsError(true); return }
 
     let amountWei: bigint
     try { amountWei = parseEther(amount as `${number}`) }
@@ -208,22 +208,26 @@ function SendModal({ open, fromEmailHash, balanceWei, privyWallet, onClose, onSu
     setLoading(true)
     try {
       setStatus('Sending…')
-      const provider = await privyWallet.getEthereumProvider()
-      const accounts = await provider.request({ method: 'eth_accounts' }) as string[]
-      const from = accounts[0] as `0x${string}`
-
-      // Encode calldata and send directly through Privy's provider
-      // so the gas sponsorship relay intercepts it — no viem gas estimation
       const data = encodeFunctionData({
         abi: EMAIL_VAULT_ABI,
         functionName: 'transfer',
         args: [fromEmailHash as `0x${string}`, toHash as `0x${string}`, amountWei],
       })
 
-      const hash = await provider.request({
-        method: 'eth_sendTransaction',
-        params: [{ from, to: getEmailVaultAddress(), data }],
-      }) as string
+      // Privy's useSendTransaction → routes through gas-sponsorship relay,
+      // sponsor:true asks Privy to cover gas, showWalletUIs:false hides the approval modal
+      const result = await sendTransaction(
+        {
+          to: getEmailVaultAddress(),
+          data,
+          chainId: baseSepolia.id,
+        },
+        {
+          sponsor: true,
+          uiOptions: { showWalletUIs: false },
+        },
+      )
+      const hash = (result as any)?.hash || (result as any)?.transactionHash || String(result)
 
       setTxHash(hash)
       void sendDepositEmailNotification({ toEmail: toEmail.trim(), amountEth: amount.trim(), txHash: hash })
@@ -445,10 +449,6 @@ export function Dashboard() {
       )
     : undefined
 
-  const privyWallet = walletsReady
-    ? wallets?.find((w: any) => w?.walletClientType === 'privy' || w?.connectorType === 'embedded')
-    : undefined
-
   const walletAddress: string = externalWallet?.address || ''
 
   const [balanceWei, setBalanceWei] = useState<bigint | null>(null)
@@ -614,7 +614,6 @@ export function Dashboard() {
         open={sendOpen}
         fromEmailHash={emailHash}
         balanceWei={balanceWei}
-        privyWallet={privyWallet}
         onClose={() => setSendOpen(false)}
         onSuccess={() => { setSendOpen(false); fetchBalance() }}
       />
