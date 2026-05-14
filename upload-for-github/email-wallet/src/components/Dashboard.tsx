@@ -36,6 +36,131 @@ async function ensureBaseSepolia(provider: any, walletClient: any) {
   } catch { /* ignore */ }
 }
 
+// ─── DepositModal ──────────────────────────────────────────────────────────
+function DepositModal({ open, email, emailHash, externalWallet, walletsReady, onClose, onSuccess }: {
+  open: boolean
+  email: string
+  emailHash: string
+  externalWallet: any
+  walletsReady: boolean
+  onClose: () => void
+  onSuccess: () => void
+}) {
+  const [amount, setAmount] = useState('')
+  const [status, setStatus] = useState('')
+  const [isError, setIsError] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [txHash, setTxHash] = useState('')
+  const [success, setSuccess] = useState(false)
+
+  function reset() { setAmount(''); setStatus(''); setIsError(false); setLoading(false); setTxHash(''); setSuccess(false) }
+  function handleClose() { onClose(); setTimeout(reset, 250) }
+
+  async function onDeposit() {
+    setStatus(''); setIsError(false)
+    if (!amount.trim()) { setStatus('Enter an amount.'); setIsError(true); return }
+    if (!externalWallet) { setStatus('Connect a wallet first.'); setIsError(true); return }
+
+    let value: bigint
+    try { value = parseEther(amount as `${number}`) }
+    catch { setStatus('Invalid ETH amount.'); setIsError(true); return }
+
+    setLoading(true)
+    try {
+      const provider = await externalWallet.getEthereumProvider()
+      const walletClient = makeWalletClient(provider)
+      const account = await getExternalAccount(provider)
+      await ensureBaseSepolia(provider, walletClient)
+
+      setStatus('Confirm in your wallet…')
+      const hash = await (walletClient as any).writeContract({
+        chain: baseSepolia,
+        address: getEmailVaultAddress(),
+        abi: EMAIL_VAULT_ABI,
+        functionName: 'deposit',
+        args: [emailHash as `0x${string}`],
+        value,
+        account,
+      })
+      setTxHash(hash)
+      setSuccess(true)
+      onSuccess()
+    } catch (e: any) {
+      setStatus(e?.shortMessage || e?.message || 'Transaction failed.')
+      setIsError(true)
+    } finally { setLoading(false) }
+  }
+
+  return (
+    <div className={`modal-backdrop${open ? ' open' : ''}`} onClick={e => { if (e.target === e.currentTarget) handleClose() }}>
+      <div className="modal">
+        {!success ? (
+          <>
+            <div className="modal-head">
+              <div>
+                <h3>Deposit to your vault</h3>
+                <p>Send ETH from your wallet into your hashcash vault.</p>
+              </div>
+              <button className="modal-close" onClick={handleClose}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="readrow">
+                <span className="key">Destination</span>
+                <span className="val">{email || '—'} <span className="mono" style={{ fontSize: 11, color: 'var(--mute)' }}>({emailHash ? emailHash.slice(0, 8) + '…' : ''})</span></span>
+              </div>
+              <div className="field" style={{ marginTop: 18 }}>
+                <label className="field-label" htmlFor="deposit-amount">Amount</label>
+                <div className="input-wrap">
+                  <input className="input with-suffix" id="deposit-amount" type="text" inputMode="decimal"
+                    placeholder="0.001" value={amount} onChange={e => setAmount(e.target.value)} />
+                  <span className="input-suffix">ETH</span>
+                </div>
+              </div>
+            </div>
+            {status && <div className={`modal-status${isError ? ' error' : ''}`}>{status}</div>}
+            <div className="modal-foot">
+              <button className="btn btn-primary btn-block" onClick={onDeposit} disabled={loading || !walletsReady}>
+                {loading
+                  ? <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" className="spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> Confirming…</>
+                  : 'Deposit ETH'}
+              </button>
+              <div className="modal-fineprint">ETH will be locked in the vault under your email hash.</div>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="success-wrap">
+              <div className="success-ring">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M5 12.5 10 17 19 7.5" />
+                </svg>
+              </div>
+              <h3 className="success-title">Deposited!</h3>
+              <p className="success-sub">Your vault balance will update shortly.</p>
+              <div className="tx-summary">
+                <div className="row"><span className="k">Amount</span><span className="v"><b>{amount}</b> ETH</span></div>
+                {txHash && (
+                  <div className="row">
+                    <span className="k">Transaction</span>
+                    <a className="v mono" href={`https://sepolia.basescan.org/tx/${txHash}`} target="_blank" rel="noreferrer">
+                      {txHash.slice(0, 8)}…{txHash.slice(-6)} ↗
+                    </a>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="modal-foot">
+              <button className="btn btn-primary btn-block" onClick={handleClose}>Done</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ─── SendModal ─────────────────────────────────────────────────────────────
 function SendModal({ open, externalWallet, walletsReady, wallets, onClose, onSuccess }: {
   open: boolean
@@ -309,6 +434,7 @@ export function Dashboard() {
   const walletAddress: string = externalWallet?.address || ''
 
   const [balanceWei, setBalanceWei] = useState<bigint | null>(null)
+  const [depositOpen, setDepositOpen] = useState(false)
   const [sendOpen, setSendOpen] = useState(false)
   const [claimOpen, setClaimOpen] = useState(false)
   const [walletMenuOpen, setWalletMenuOpen] = useState(false)
@@ -411,18 +537,22 @@ export function Dashboard() {
             {!externalWallet && (
               <div className="wallet-banner">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-4 0v2"/><circle cx="12" cy="14" r="1" fill="currentColor"/></svg>
-                <span>Connect a wallet to send or claim</span>
+                <span>Connect a wallet to deposit, send, or claim</span>
                 <button className="btn btn-primary btn-sm" onClick={() => connectWallet()}>Connect</button>
               </div>
             )}
-            <div className="action-row">
-              <button className="btn btn-primary btn-block" onClick={() => externalWallet ? setSendOpen(true) : connectWallet()}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></svg>
+            <div className="action-row action-row-3">
+              <button className="btn btn-primary btn-block" onClick={() => externalWallet ? setDepositOpen(true) : connectWallet()}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v20"/><path d="m17 7-5-5-5 5"/><path d="M3 20h18"/></svg>
+                Deposit
+              </button>
+              <button className="btn btn-outline btn-block" onClick={() => externalWallet ? setSendOpen(true) : connectWallet()}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></svg>
                 Send
               </button>
               <button className="btn btn-outline btn-block" onClick={() => externalWallet ? setClaimOpen(true) : connectWallet()}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                Claim to Wallet
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                Claim
               </button>
             </div>
           </div>
@@ -451,6 +581,15 @@ export function Dashboard() {
       </div>
 
       {/* ── Modals ── */}
+      <DepositModal
+        open={depositOpen}
+        email={email || ''}
+        emailHash={emailHash}
+        externalWallet={externalWallet}
+        walletsReady={walletsReady}
+        onClose={() => setDepositOpen(false)}
+        onSuccess={() => { setDepositOpen(false); fetchBalance() }}
+      />
       <SendModal
         open={sendOpen}
         externalWallet={externalWallet}

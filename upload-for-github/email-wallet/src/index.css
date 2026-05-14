@@ -411,6 +411,7 @@ input { font-family: inherit; }
 }
 .wallet-banner span { flex: 1; }
 .action-row { margin-top: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.action-row-3 { grid-template-columns: 1fr 1fr 1fr; }
 .dash-foot { margin-top: 28px; text-align: center; font-size: 13px; color: var(--mute); }
 .dash-foot a { color: var(--ink); text-decoration: none; font-weight: 500; border-bottom: 1px solid var(--line); }
 
