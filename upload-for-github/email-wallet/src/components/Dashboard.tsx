@@ -162,9 +162,11 @@ function DepositModal({ open, email, emailHash, externalWallet, walletsReady, on
 }
 
 // ─── SendModal ─────────────────────────────────────────────────────────────
-function SendModal({ open, externalWallet, walletsReady, wallets, onClose, onSuccess }: {
+// Uses vault transfer(from, to, amount) — no external wallet needed, Privy sponsors gas
+function SendModal({ open, fromEmailHash, balanceWei, walletsReady, wallets, onClose, onSuccess }: {
   open: boolean
-  externalWallet: any
+  fromEmailHash: string
+  balanceWei: bigint | null
   walletsReady: boolean
   wallets: any[]
   onClose: () => void
@@ -187,30 +189,42 @@ function SendModal({ open, externalWallet, walletsReady, wallets, onClose, onSuc
 
   function handleClose() { onClose(); setTimeout(reset, 250) }
 
+  function fillMax() {
+    if (balanceWei !== null) setAmount(formatEther(balanceWei))
+  }
+
   async function onSend() {
     setStatus(''); setIsError(false)
     if (!toEmail.trim() || !amount.trim()) { setStatus('Please fill in all fields.'); setIsError(true); return }
-    if (!wallets?.[0]) { setStatus('Connect a wallet first.'); setIsError(true); return }
 
-    let value: bigint
-    try { value = parseEther(amount as `${number}`) }
+    // use Privy embedded wallet — no MetaMask needed
+    const privyWallet = wallets?.find((w: any) =>
+      w?.walletClientType === 'privy' || w?.connectorType === 'embedded'
+    )
+    if (!privyWallet) { setStatus('Privy wallet not ready. Try signing out and back in.'); setIsError(true); return }
+
+    let amountWei: bigint
+    try { amountWei = parseEther(amount as `${number}`) }
     catch { setStatus('Invalid ETH amount.'); setIsError(true); return }
+
+    if (balanceWei !== null && amountWei > balanceWei) {
+      setStatus('Amount exceeds your vault balance.'); setIsError(true); return
+    }
 
     setLoading(true)
     try {
-      const provider = await externalWallet.getEthereumProvider()
+      const provider = await privyWallet.getEthereumProvider()
       const walletClient = makeWalletClient(provider)
       const account = await getExternalAccount(provider)
       await ensureBaseSepolia(provider, walletClient)
 
-      setStatus('Confirm in your wallet…')
+      setStatus('Sending…')
       const hash = await (walletClient as any).writeContract({
         chain: baseSepolia,
         address: getEmailVaultAddress(),
         abi: EMAIL_VAULT_ABI,
-        functionName: 'deposit',
-        args: [toHash as `0x${string}`],
-        value,
+        functionName: 'transfer',
+        args: [fromEmailHash as `0x${string}`, toHash as `0x${string}`, amountWei],
         account,
       })
 
@@ -232,7 +246,7 @@ function SendModal({ open, externalWallet, walletsReady, wallets, onClose, onSuc
             <div className="modal-head">
               <div>
                 <h3>Send ETH</h3>
-                <p>Recipient gets an email and can claim anytime.</p>
+                <p>Vault-to-vault transfer. No wallet pop-up — gas is sponsored.</p>
               </div>
               <button className="modal-close" onClick={handleClose}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
@@ -245,18 +259,21 @@ function SendModal({ open, externalWallet, walletsReady, wallets, onClose, onSuc
                   <input className="input" id="send-email" type="email" placeholder="friend@gmail.com"
                     value={toEmail} onChange={e => setToEmail(e.target.value)} />
                 </div>
+                {toHash && (
+                  <div className="field-hint">
+                    Hash: <span className="mono" style={{ fontSize: 11.5 }}>{toHash.slice(0, 10)}…{toHash.slice(-6)}</span>
+                  </div>
+                )}
               </div>
               <div className="field">
                 <label className="field-label" htmlFor="send-amount">Amount</label>
                 <div className="input-wrap">
-                  <input className="input with-suffix" id="send-amount" type="text" inputMode="decimal"
+                  <input className="input with-max" id="send-amount" type="text" inputMode="decimal"
                     placeholder="0.001" value={amount} onChange={e => setAmount(e.target.value)} />
-                  <span className="input-suffix">ETH</span>
+                  <button className="input-max" onClick={fillMax}>Max</button>
                 </div>
-                {toHash && (
-                  <div className="field-hint">
-                    Email hash: <span className="mono" style={{ fontSize: 11.5 }}>{toHash.slice(0, 10)}…{toHash.slice(-6)}</span>
-                  </div>
+                {balanceWei !== null && (
+                  <div className="field-hint">Available: <b style={{ color: 'var(--ink)' }}>{fmt(balanceWei)} ETH</b></div>
                 )}
               </div>
             </div>
@@ -264,10 +281,10 @@ function SendModal({ open, externalWallet, walletsReady, wallets, onClose, onSuc
             <div className="modal-foot">
               <button className="btn btn-primary btn-block" onClick={onSend} disabled={loading || !walletsReady}>
                 {loading
-                  ? <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" className="spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> Confirming…</>
+                  ? <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" className="spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> Sending…</>
                   : 'Send ETH'}
               </button>
-              <div className="modal-fineprint">Funds are locked in a smart contract until the recipient claims.</div>
+              <div className="modal-fineprint">Funds move instantly between vaults. Recipient can claim anytime.</div>
             </div>
           </>
         ) : (
@@ -280,7 +297,7 @@ function SendModal({ open, externalWallet, walletsReady, wallets, onClose, onSuc
               </div>
               <h3 className="success-title">Sent!</h3>
               <p className="success-sub">
-                A notification email was sent to <b>{toEmail}</b>. They can claim anytime — funds are safe in the vault until then.
+                A notification email was sent to <b>{toEmail}</b>. They can claim anytime.
               </p>
               <div className="tx-summary">
                 <div className="row">
@@ -288,7 +305,7 @@ function SendModal({ open, externalWallet, walletsReady, wallets, onClose, onSuc
                   <span className="v"><b>{amount}</b> ETH</span>
                 </div>
                 <div className="row">
-                  <span className="k">Recipient hash</span>
+                  <span className="k">Recipient</span>
                   <span className="v mono">{toHash.slice(0, 10)}…{toHash.slice(-6)}</span>
                 </div>
                 {txHash && (
@@ -594,7 +611,8 @@ export function Dashboard() {
       />
       <SendModal
         open={sendOpen}
-        externalWallet={externalWallet}
+        fromEmailHash={emailHash}
+        balanceWei={balanceWei}
         walletsReady={walletsReady}
         wallets={wallets || []}
         onClose={() => setSendOpen(false)}
