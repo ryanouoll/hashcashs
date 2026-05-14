@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { usePrivy, useWallets } from '@privy-io/react-auth'
-import { formatEther, parseEther } from 'viem'
+import { formatEther, parseEther, encodeFunctionData } from 'viem'
 import { baseSepolia } from 'viem/chains'
 import { hashEmail } from '../lib/email'
 import { EMAIL_VAULT_ABI, getEmailVaultAddress } from '../lib/emailVault'
@@ -209,17 +209,22 @@ function SendModal({ open, fromEmailHash, balanceWei, privyWallet, onClose, onSu
     try {
       setStatus('Sending…')
       const provider = await privyWallet.getEthereumProvider()
-      const walletClient = makeWalletClient(provider)
-      const account = await getExternalAccount(provider)
-      await ensureBaseSepolia(provider, walletClient)
-      const hash = await (walletClient as any).writeContract({
-        chain: baseSepolia,
-        address: getEmailVaultAddress(),
+      const accounts = await provider.request({ method: 'eth_accounts' }) as string[]
+      const from = accounts[0] as `0x${string}`
+
+      // Encode calldata and send directly through Privy's provider
+      // so the gas sponsorship relay intercepts it — no viem gas estimation
+      const data = encodeFunctionData({
         abi: EMAIL_VAULT_ABI,
         functionName: 'transfer',
         args: [fromEmailHash as `0x${string}`, toHash as `0x${string}`, amountWei],
-        account,
       })
+
+      const hash = await provider.request({
+        method: 'eth_sendTransaction',
+        params: [{ from, to: getEmailVaultAddress(), data }],
+      }) as string
+
       setTxHash(hash)
       void sendDepositEmailNotification({ toEmail: toEmail.trim(), amountEth: amount.trim(), txHash: hash })
       setSuccess(true)
