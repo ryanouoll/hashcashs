@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { usePrivy, useWallets } from '@privy-io/react-auth'
-import { useSmartWallets } from '@privy-io/react-auth/smart-wallets'
 import { formatEther, parseEther } from 'viem'
 import { baseSepolia } from 'viem/chains'
 import { hashEmail } from '../lib/email'
@@ -163,12 +162,11 @@ function DepositModal({ open, email, emailHash, externalWallet, walletsReady, on
 }
 
 // ─── SendModal ─────────────────────────────────────────────────────────────
-// Smart wallet path = zero popup. Falls back to embedded wallet if smart wallet not ready.
-function SendModal({ open, fromEmailHash, balanceWei, smartClient, privyWallet, onClose, onSuccess }: {
+// Uses Privy embedded wallet — gas sponsored by Privy, no popup
+function SendModal({ open, fromEmailHash, balanceWei, privyWallet, onClose, onSuccess }: {
   open: boolean
   fromEmailHash: string
   balanceWei: bigint | null
-  smartClient: any
   privyWallet: any
   onClose: () => void
   onSuccess: () => void
@@ -197,6 +195,7 @@ function SendModal({ open, fromEmailHash, balanceWei, smartClient, privyWallet, 
   async function onSend() {
     setStatus(''); setIsError(false)
     if (!toEmail.trim() || !amount.trim()) { setStatus('Please fill in all fields.'); setIsError(true); return }
+    if (!privyWallet) { setStatus('Wallet not ready. Try signing out and back in.'); setIsError(true); return }
 
     let amountWei: bigint
     try { amountWei = parseEther(amount as `${number}`) }
@@ -209,37 +208,20 @@ function SendModal({ open, fromEmailHash, balanceWei, smartClient, privyWallet, 
     setLoading(true)
     try {
       setStatus('Sending…')
-      let txHash: string
-
-      if (smartClient) {
-        // Smart wallet path — gas sponsored, zero popup
-        txHash = await smartClient.writeContract({
-          address: getEmailVaultAddress(),
-          abi: EMAIL_VAULT_ABI,
-          functionName: 'transfer',
-          args: [fromEmailHash as `0x${string}`, toHash as `0x${string}`, amountWei],
-          chain: baseSepolia,
-        })
-      } else if (privyWallet) {
-        // Fallback: Privy embedded wallet
-        const provider = await privyWallet.getEthereumProvider()
-        const walletClient = makeWalletClient(provider)
-        const account = await getExternalAccount(provider)
-        await ensureBaseSepolia(provider, walletClient)
-        txHash = await (walletClient as any).writeContract({
-          chain: baseSepolia,
-          address: getEmailVaultAddress(),
-          abi: EMAIL_VAULT_ABI,
-          functionName: 'transfer',
-          args: [fromEmailHash as `0x${string}`, toHash as `0x${string}`, amountWei],
-          account,
-        })
-      } else {
-        setStatus('Wallet not ready. Try signing out and back in.'); setIsError(true); setLoading(false); return
-      }
-
-      setTxHash(txHash)
-      void sendDepositEmailNotification({ toEmail: toEmail.trim(), amountEth: amount.trim(), txHash })
+      const provider = await privyWallet.getEthereumProvider()
+      const walletClient = makeWalletClient(provider)
+      const account = await getExternalAccount(provider)
+      await ensureBaseSepolia(provider, walletClient)
+      const hash = await (walletClient as any).writeContract({
+        chain: baseSepolia,
+        address: getEmailVaultAddress(),
+        abi: EMAIL_VAULT_ABI,
+        functionName: 'transfer',
+        args: [fromEmailHash as `0x${string}`, toHash as `0x${string}`, amountWei],
+        account,
+      })
+      setTxHash(hash)
+      void sendDepositEmailNotification({ toEmail: toEmail.trim(), amountEth: amount.trim(), txHash: hash })
       setSuccess(true)
       onSuccess()
     } catch (e: any) {
@@ -448,7 +430,6 @@ function ClaimModal({ open, email, emailHash, walletAddress, balanceWei, externa
 export function Dashboard() {
   const { logout, user, connectWallet, unlinkWallet } = usePrivy()
   const { wallets, ready: walletsReady } = useWallets()
-  const { client: smartClient } = useSmartWallets()
 
   const email = getPrivyUserEmail(user)
   const emailHash = useMemo(() => (email ? hashEmail(email) : ''), [email])
@@ -628,7 +609,6 @@ export function Dashboard() {
         open={sendOpen}
         fromEmailHash={emailHash}
         balanceWei={balanceWei}
-        smartClient={smartClient}
         privyWallet={privyWallet}
         onClose={() => setSendOpen(false)}
         onSuccess={() => { setSendOpen(false); fetchBalance() }}
