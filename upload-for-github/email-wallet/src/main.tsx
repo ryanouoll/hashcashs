@@ -22,6 +22,9 @@ createRoot(document.getElementById('root')!).render(
               walletChainType: 'ethereum-only',
               walletList: ['metamask', 'coinbase_wallet', 'rainbow', 'wallet_connect', 'detected_ethereum_wallets'],
             },
+            embeddedWallets: {
+              showWalletUIs: false,
+            },
           }}
         >
           <App />
