@@ -384,7 +384,14 @@ input { font-family: inherit; }
 .badge .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
 .badge.network .dot { background: #4F8DEF; box-shadow: 0 0 0 3px rgba(79,141,239,0.18); }
 .badge .ic { width: 14px; height: 14px; color: var(--mute); }
-.action-row { margin-top: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.wallet-banner {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; margin-top: 16px;
+  background: var(--accent-soft); border: 1px solid rgba(255,107,43,0.2);
+  border-radius: 10px; font-size: 13px; color: var(--accent);
+}
+.wallet-banner span { flex: 1; }
+.action-row { margin-top: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .dash-foot { margin-top: 28px; text-align: center; font-size: 13px; color: var(--mute); }
 .dash-foot a { color: var(--ink); text-decoration: none; font-weight: 500; border-bottom: 1px solid var(--line); }
 

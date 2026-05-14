@@ -301,12 +301,9 @@ export function Dashboard() {
   const emailHash = useMemo(() => (email ? hashEmail(email) : ''), [email])
 
   const externalWallet = walletsReady
-    ? wallets?.find((w: any) => {
-        if (w?.connectorType) return true
-        if (w?.walletClientType && w.walletClientType !== 'privy') return true
-        if (w?.type === 'wallet' && w?.walletClientType !== 'privy') return true
-        return false
-      })
+    ? wallets?.find((w: any) =>
+        w?.walletClientType && w.walletClientType !== 'privy' && w.connectorType !== 'embedded'
+      )
     : undefined
 
   const walletAddress: string = externalWallet?.address || ''
@@ -392,12 +389,19 @@ export function Dashboard() {
               )}
             </div>
 
+            {!externalWallet && (
+              <div className="wallet-banner">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-4 0v2"/><circle cx="12" cy="14" r="1" fill="currentColor"/></svg>
+                <span>Connect a wallet to send or claim</span>
+                <button className="btn btn-primary btn-sm" onClick={() => connectWallet()}>Connect</button>
+              </div>
+            )}
             <div className="action-row">
-              <button className="btn btn-primary btn-block" onClick={() => setSendOpen(true)}>
+              <button className="btn btn-primary btn-block" onClick={() => externalWallet ? setSendOpen(true) : connectWallet()}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></svg>
                 Send
               </button>
-              <button className="btn btn-outline btn-block" onClick={() => setClaimOpen(true)}>
+              <button className="btn btn-outline btn-block" onClick={() => externalWallet ? setClaimOpen(true) : connectWallet()}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                 Claim to Wallet
               </button>

@@ -14,10 +14,10 @@ createRoot(document.getElementById('root')!).render(
         <PrivyProvider
           appId={privyAppId}
           config={{
-            loginMethods: ['google'],
+            loginMethods: ['google', 'wallet'],
             appearance: {
-              theme: 'dark',
-              accentColor: '#3b82f6',
+              theme: 'light',
+              accentColor: '#FF6B2B',
               logo: undefined,
               walletChainType: 'ethereum-only',
               walletList: ['metamask', 'coinbase_wallet', 'rainbow', 'wallet_connect', 'detected_ethereum_wallets'],
