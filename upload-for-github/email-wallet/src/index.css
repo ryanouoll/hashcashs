@@ -169,17 +169,36 @@ input { font-family: inherit; }
 }
 .nav-link:hover { color: var(--ink); background: var(--bg-soft); }
 .nav-right { display: flex; align-items: center; gap: 10px; }
+.wallet-menu-wrap { position: relative; }
 .wallet-chip {
   display: inline-flex; align-items: center; gap: 8px;
-  padding: 7px 12px 7px 8px;
+  padding: 7px 10px 7px 8px;
   background: var(--bg-soft); border: 1px solid var(--line);
   border-radius: 9999px; font-size: 13px; font-weight: 500; color: var(--ink);
+  cursor: pointer; transition: background 0.15s, border-color 0.15s;
 }
+.wallet-chip:hover { background: var(--line); border-color: var(--mute); }
 .wallet-chip-dot {
   width: 20px; height: 20px; border-radius: 50%;
   background: linear-gradient(135deg, #FF6B2B, #FFB089);
   display: inline-block; flex-shrink: 0;
 }
+.wallet-menu-backdrop { position: fixed; inset: 0; z-index: 40; }
+.wallet-menu {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 50;
+  background: #fff; border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.10); padding: 6px; min-width: 170px;
+}
+.wallet-menu-item {
+  display: flex; align-items: center; gap: 9px;
+  width: 100%; padding: 9px 12px; border-radius: 8px;
+  font-size: 13.5px; font-weight: 500; color: var(--ink);
+  background: none; border: none; cursor: pointer; text-align: left;
+  transition: background 0.12s;
+}
+.wallet-menu-item:hover { background: var(--bg-soft); }
+.wallet-menu-item.danger { color: #e53e3e; }
+.wallet-menu-item.danger:hover { background: #fff5f5; }
 
 /* ─── Landing / Hero ─────────────────────────────────────────────── */
 .hero {

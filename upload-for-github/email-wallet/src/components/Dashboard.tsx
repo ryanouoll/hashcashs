@@ -294,7 +294,7 @@ function ClaimModal({ open, email, emailHash, walletAddress, balanceWei, externa
 
 // ─── Dashboard ─────────────────────────────────────────────────────────────
 export function Dashboard() {
-  const { logout, user, connectWallet } = usePrivy()
+  const { logout, user, connectWallet, unlinkWallet } = usePrivy()
   const { wallets, ready: walletsReady } = useWallets()
 
   const email = getPrivyUserEmail(user)
@@ -311,6 +311,7 @@ export function Dashboard() {
   const [balanceWei, setBalanceWei] = useState<bigint | null>(null)
   const [sendOpen, setSendOpen] = useState(false)
   const [claimOpen, setClaimOpen] = useState(false)
+  const [walletMenuOpen, setWalletMenuOpen] = useState(false)
 
   const fetchBalance = useCallback(async () => {
     if (!emailHash) return
@@ -343,10 +344,28 @@ export function Dashboard() {
           </div>
           <div className="nav-right">
             {walletAddress ? (
-              <span className="wallet-chip">
-                <span className="wallet-chip-dot" />
-                <span className="mono">{walletAddress.slice(0, 6)}…{walletAddress.slice(-4)}</span>
-              </span>
+              <div className="wallet-menu-wrap">
+                <button className="wallet-chip" onClick={() => setWalletMenuOpen(o => !o)}>
+                  <span className="wallet-chip-dot" />
+                  <span className="mono">{walletAddress.slice(0, 6)}…{walletAddress.slice(-4)}</span>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="m6 9 6 6 6-6"/></svg>
+                </button>
+                {walletMenuOpen && (
+                  <>
+                    <div className="wallet-menu-backdrop" onClick={() => setWalletMenuOpen(false)} />
+                    <div className="wallet-menu">
+                      <button className="wallet-menu-item" onClick={() => { setWalletMenuOpen(false); connectWallet() }}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4z"/></svg>
+                        Switch wallet
+                      </button>
+                      <button className="wallet-menu-item danger" onClick={() => { setWalletMenuOpen(false); unlinkWallet(walletAddress) }}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                        Disconnect
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
             ) : (
               <button className="btn btn-ghost btn-sm" onClick={() => connectWallet()}>
                 Connect Wallet
