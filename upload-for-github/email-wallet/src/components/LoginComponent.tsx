@@ -12,8 +12,6 @@ export function LoginComponent() {
   const { wallets, ready: walletsReady } = useWallets()
 
   const hasAppId = Boolean(import.meta.env.VITE_PRIVY_APP_ID)
-  // 只要不是 privy（embedded）就當作外部錢包。
-  // 不同版本/連接器回傳欄位可能不同，這樣最穩。
   const externalWallet =
     wallets?.find((w: any) => w?.walletClientType && w.walletClientType !== 'privy') ||
     wallets?.find((w: any) => w?.connectorType) ||
@@ -34,36 +32,19 @@ export function LoginComponent() {
     setClaimStatus('')
     setClaimTxHash('')
 
-    if (!walletsReady) {
-      setClaimStatus('錢包初始化中，請稍等 1–2 秒後再試。')
-      return
-    }
-    if (!externalWallet) {
-      setClaimStatus('請先連結外部錢包（MetaMask）。')
-      return
-    }
-    if (!authenticated || !authedEmail) {
-      setClaimStatus('此功能只能提領「你 Google OAuth 登入的 Email」的餘額。請先用 Google 登入。')
-      return
-    }
-    if (!claimAmountEth.trim()) {
-      setClaimStatus('請填寫要領出的 ETH 數量。')
-      return
-    }
+    if (!walletsReady) { setClaimStatus('錢包初始化中，請稍等 1–2 秒後再試。'); return }
+    if (!externalWallet) { setClaimStatus('請先連結外部錢包（MetaMask）。'); return }
+    if (!authenticated || !authedEmail) { setClaimStatus('此功能只能提領「你 Google OAuth 登入的 Email」的餘額。請先用 Google 登入。'); return }
+    if (!claimAmountEth.trim()) { setClaimStatus('請填寫要領出的 ETH 數量。'); return }
 
     let amountWei: bigint
-    try {
-      amountWei = parseEther(claimAmountEth as `${number}`)
-    } catch {
-      setClaimStatus('ETH 數量格式不正確。')
-      return
-    }
+    try { amountWei = parseEther(claimAmountEth as `${number}`) }
+    catch { setClaimStatus('ETH 數量格式不正確。'); return }
 
     try {
       const provider = await externalWallet.getEthereumProvider()
       const walletClient = makeWalletClient(provider)
 
-      // 取得付款帳號
       let account: `0x${string}` | undefined
       try {
         const accounts = (await provider.request({ method: 'eth_accounts' })) as string[]
@@ -72,35 +53,21 @@ export function LoginComponent() {
           const requested = (await provider.request({ method: 'eth_requestAccounts' })) as string[]
           if (requested?.[0]) account = requested[0] as `0x${string}`
         }
-      } catch {
-        // ignore
-      }
+      } catch { /* ignore */ }
 
-      // 確保鏈是 Base Sepolia
       try {
         const chainId = await walletClient.getChainId()
         if (chainId !== baseSepolia.id) {
           setClaimStatus('正在切換到 Base Sepolia...')
-          try {
-            await walletClient.switchChain({ id: baseSepolia.id })
-          } catch {
+          try { await walletClient.switchChain({ id: baseSepolia.id }) }
+          catch {
             await provider.request({
               method: 'wallet_addEthereumChain',
-              params: [
-                {
-                  chainId: `0x${baseSepolia.id.toString(16)}`,
-                  chainName: baseSepolia.name,
-                  nativeCurrency: baseSepolia.nativeCurrency,
-                  rpcUrls: [baseSepolia.rpcUrls.default.http[0]],
-                  blockExplorerUrls: [baseSepolia.blockExplorers?.default.url],
-                },
-              ],
+              params: [{ chainId: `0x${baseSepolia.id.toString(16)}`, chainName: baseSepolia.name, nativeCurrency: baseSepolia.nativeCurrency, rpcUrls: [baseSepolia.rpcUrls.default.http[0]], blockExplorerUrls: [baseSepolia.blockExplorers?.default.url] }],
             })
           }
         }
-      } catch {
-        // ignore
-      }
+      } catch { /* ignore */ }
 
       setClaimStatus('送出交易中（請在錢包確認）...')
       const hash = await (walletClient as any).writeContract({
@@ -122,74 +89,80 @@ export function LoginComponent() {
   }
 
   return (
-    <div className="ui-card">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <div className="text-sm text-white/60">登入</div>
-          <div className="mt-1 text-xl font-semibold tracking-tight">登入 / 連結錢包</div>
-          <div className="mt-1 text-sm text-white/60">此版本不建立內建錢包，只支援連結外部錢包（MetaMask）。</div>
-          <div className="mt-2 text-xs text-white/50">錢包狀態：{walletsReady ? (isConnected ? '已連結' : '未連結') : '初始化中...'}</div>
-        </div>
-        <div className="flex flex-col items-end gap-2">
-          {authenticated ? (
+    <div className="grid gap-5">
+
+      {/* ── 錢包狀態卡 ── */}
+      <div className="ui-card">
+        <div className="brex-section-label">登入</div>
+        <div className="brex-section-title">連結錢包</div>
+        <div className="brex-section-desc">此版本不建立內建錢包，只支援連結外部錢包（MetaMask）。</div>
+
+        {/* 錢包狀態 pill */}
+        <div className="mt-4 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span
+              className={`inline-block h-2 w-2 rounded-full ${
+                !walletsReady ? 'bg-yellow-400' : isConnected ? 'bg-emerald-400' : 'bg-white/30'
+              }`}
+            />
+            <span className="text-sm text-white/60">
+              {!walletsReady ? '初始化中...' : isConnected ? '已連結' : '未連結'}
+            </span>
+          </div>
+          <div className="flex gap-2">
+            {authenticated && (
+              <button onClick={logout} className="rounded-lg bg-white/8 px-3 py-1.5 text-xs font-medium text-white/70 hover:bg-white/12">
+                登出
+              </button>
+            )}
             <button
-              onClick={logout}
-              className="rounded-xl bg-white/10 px-4 py-2 text-sm font-medium text-white hover:bg-white/15 active:bg-white/20"
+              onClick={() => connectWallet()}
+              disabled={!ready || !hasAppId || !walletsReady}
+              className={`rounded-lg px-3 py-1.5 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${
+                isConnected
+                  ? 'bg-white/8 text-white/70 hover:bg-white/12'
+                  : 'bg-[#FF6B2B] text-white hover:bg-[#FF8447]'
+              }`}
             >
-              登出
+              {isConnected ? '已連結 MetaMask' : '連結錢包'}
             </button>
-          ) : null}
-          <button
-            onClick={() => connectWallet()}
-            disabled={!ready || !hasAppId || !walletsReady}
-            className={`rounded-xl px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60 ${
-              isConnected ? 'bg-white/10 hover:bg-white/15 active:bg-white/20' : 'bg-blue-500 hover:bg-blue-400 active:bg-blue-600'
-            }`}
-          >
-            {isConnected ? '連結錢包成功' : '連結錢包（MetaMask）'}
-          </button>
+          </div>
         </div>
+
+        {!hasAppId && (
+          <div className="ui-status-warn mt-4">
+            沒讀到 <span className="font-mono">VITE_PRIVY_APP_ID</span>，登入按鈕會被鎖住。請設定{' '}
+            <span className="font-mono">email-wallet/.env</span> 後重開 dev server。
+          </div>
+        )}
+
+        {hasAppId && !ready && (
+          <div className="ui-status mt-4">Privy 初始化中（ready=false），通常刷新或等 1–2 秒。</div>
+        )}
+
+        {walletAddress && (
+          <div className="mt-4">
+            <InfoRow label="錢包地址" value={walletAddress} mono />
+          </div>
+        )}
       </div>
 
-      {!hasAppId && (
-        <div className="mt-4 rounded-2xl border border-amber-400/30 bg-amber-400/10 p-3 text-sm text-amber-100">
-          沒讀到 <span className="font-mono">VITE_PRIVY_APP_ID</span>，所以登入按鈕會被鎖住。請確認{' '}
-          <span className="font-mono">email-wallet/.env</span> 有設定後，重開 dev server。
-        </div>
-      )}
-
-      {hasAppId && !ready && (
-        <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 p-3 text-sm text-white/70">
-          Privy 初始化中（ready=false），通常刷新或等 1–2 秒就會好。
-        </div>
-      )}
-
-      {walletAddress && (
-        <div className="mt-4 grid gap-3">
-          <InfoRow label="錢包地址" value={walletAddress} mono />
-        </div>
-      )}
-
-      <div className="mt-4 grid gap-3 rounded-2xl border border-white/10 bg-black/20 p-3">
-        <div className="text-sm font-semibold tracking-tight text-white">轉入該錢包（Claim）</div>
-        <div className="text-sm text-white/60">
-          把某個 EmailHash 的金庫餘額領到你目前連結的錢包地址。
-          {!walletsReady && <span className="ml-2 text-amber-200">（錢包初始化中…請等 1–2 秒或先按「連結錢包」）</span>}
-          {walletsReady && !isConnected && <span className="ml-2 text-amber-200">（尚未偵測到外部錢包，請先按「連結錢包」）</span>}
+      {/* ── Claim 卡 ── */}
+      <div className="ui-card">
+        <div className="brex-section-label">提領</div>
+        <div className="brex-section-title">Claim 到錢包</div>
+        <div className="brex-section-desc">
+          把你的 Email Hash 金庫餘額領到目前連結的錢包地址。
+          {!walletsReady && <span className="ml-1 text-yellow-300/80">錢包初始化中…</span>}
+          {walletsReady && !isConnected && <span className="ml-1 text-yellow-300/80">請先連結錢包。</span>}
         </div>
 
-        <div className="ui-card-subtle">
-          <div className="ui-label">提領用 Email（Google OAuth）</div>
-          <div className="mt-1 break-all text-sm text-white">{authenticated ? authedEmail || '-' : '-'}</div>
-        </div>
+        <div className="mt-5 grid gap-3">
+          <InfoRow label="提領用 Email（Google OAuth）" value={authenticated ? (authedEmail || '-') : '-'} />
+          <InfoRow label="Email Hash (keccak256)" value={claimHash || '-'} mono />
 
-        <div className="ui-card-subtle">
-          <div className="ui-label">Email Hash (keccak256)</div>
-          <div className="mt-1 break-all font-mono text-sm text-white">{claimHash || '-'}</div>
-        </div>
-
-          <label className="grid gap-2">
-            <div className="text-xs text-white/60">領出金額（ETH）</div>
+          <label className="grid gap-1.5">
+            <div className="ui-label">領出金額（ETH）</div>
             <input
               value={claimAmountEth}
               onChange={(e) => setClaimAmountEth(e.target.value)}
@@ -199,29 +172,24 @@ export function LoginComponent() {
             />
           </label>
 
-        <button onClick={onClaimToWallet} className="ui-button-primary" disabled={!walletsReady}>
-            轉入該錢包（claim）
+          <button onClick={onClaimToWallet} className="ui-button-primary" disabled={!walletsReady}>
+            Claim 到錢包
           </button>
 
-          {claimStatus && <div className="rounded-2xl border border-white/10 bg-black/30 p-3 text-sm text-white/80">{claimStatus}</div>}
-          {claimTxHash && (
-            <div className="ui-card-subtle">
-              <div className="ui-label">交易 Hash</div>
-              <div className="mt-1 break-all font-mono text-sm text-white">{claimTxHash}</div>
-            </div>
-          )}
+          {claimStatus && <div className="ui-status">{claimStatus}</div>}
+          {claimTxHash && <InfoRow label="交易 Hash" value={claimTxHash} mono />}
+        </div>
       </div>
 
     </div>
   )
 }
 
-function InfoRow(props: { label: string; value: string; mono?: boolean }) {
+function InfoRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
     <div className="ui-card-subtle">
-      <div className="ui-label">{props.label}</div>
-      <div className={`mt-1 break-all text-sm text-white ${props.mono ? 'font-mono' : ''}`}>{props.value || '-'}</div>
+      <div className="ui-label">{label}</div>
+      <div className={`ui-value break-all ${mono ? 'font-mono text-xs' : ''}`}>{value || '-'}</div>
     </div>
   )
 }
-

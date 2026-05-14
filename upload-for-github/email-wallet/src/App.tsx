@@ -1,33 +1,23 @@
-import { LoginComponent } from './components/LoginComponent'
-import { ReceiveUI } from './components/ReceiveUI'
-import { SendUI } from './components/SendUI'
-import { HashTransferUI } from './components/HashTransferUI'
+import { usePrivy } from '@privy-io/react-auth'
+import { LandingPage } from './components/LandingPage'
+import { Dashboard } from './components/Dashboard'
 
 function App() {
-  return (
-    <div className="min-h-dvh px-4 pb-16 pt-10">
-      <div className="mx-auto w-full max-w-md">
-        <header className="mb-5">
-          <div>
-            <div className="text-sm text-white/60">Base Network</div>
-            <div className="mt-1 text-3xl font-semibold tracking-tight">Email 錢包</div>
-            <div className="mt-1 text-sm text-white/60">MVP：Google 登入 → Email Hash → 合約 deposit / 查餘額</div>
-          </div>
-        </header>
+  const { ready, authenticated } = usePrivy()
 
-        <div className="grid gap-4">
-          <LoginComponent />
-          <SendUI />
-          <HashTransferUI />
-          <ReceiveUI />
-        </div>
-
-        <footer className="mt-6 text-center text-xs text-white/40">
-          RPC：<span className="font-mono">{import.meta.env.VITE_BASE_RPC_URL || 'https://sepolia.base.org'}</span>
-        </footer>
+  if (!ready) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{
+          width: 28, height: 28, borderRadius: '50%',
+          border: '2.5px solid #E8E6E1', borderTopColor: '#FF6B2B',
+          animation: 'spin 0.8s linear infinite',
+        }} />
       </div>
-    </div>
-  )
+    )
+  }
+
+  return authenticated ? <Dashboard /> : <LandingPage />
 }
 
 export default App

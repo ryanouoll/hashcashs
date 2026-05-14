@@ -10,23 +10,23 @@ const privyAppId = import.meta.env.VITE_PRIVY_APP_ID
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     {privyAppId ? (
-      <PrivyProvider
-        appId={privyAppId}
-        config={{
-          loginMethods: ['google'],
-          appearance: {
-            theme: 'dark',
-            accentColor: '#3b82f6',
-            logo: undefined,
-            walletChainType: 'ethereum-only',
-            walletList: ['metamask', 'coinbase_wallet', 'rainbow', 'wallet_connect', 'detected_ethereum_wallets'],
-          },
-        }}
-      >
-        <ErrorBoundary>
+      <ErrorBoundary>
+        <PrivyProvider
+          appId={privyAppId}
+          config={{
+            loginMethods: ['google'],
+            appearance: {
+              theme: 'dark',
+              accentColor: '#3b82f6',
+              logo: undefined,
+              walletChainType: 'ethereum-only',
+              walletList: ['metamask', 'coinbase_wallet', 'rainbow', 'wallet_connect', 'detected_ethereum_wallets'],
+            },
+          }}
+        >
           <App />
-        </ErrorBoundary>
-      </PrivyProvider>
+        </PrivyProvider>
+      </ErrorBoundary>
     ) : (
       <div
         style={{

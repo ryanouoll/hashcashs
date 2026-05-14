@@ -23,23 +23,11 @@ export function HashTransferUI() {
     setStatus('')
     setTxHash('')
 
-    // 需求：必須 OAuth（Gmail/Google）登入才能用
-    if (!authenticated) {
-      setStatus('此功能需要先使用 Gmail 登入（OAuth）。')
-      return
-    }
-    if (!walletsReady) {
-      setStatus('錢包初始化中，請稍等 1–2 秒後再試。')
-      return
-    }
-    if (!wallets?.[0]) {
-      setStatus('找不到可用錢包（請重新登入一次）。')
-      return
-    }
-    if (!authedEmail || !toEmail.trim()) {
-      setStatus('請填寫 To Email。')
-      return
-    }
+    if (!authenticated) { setStatus('此功能需要先使用 Gmail 登入（OAuth）。'); return }
+    if (!walletsReady) { setStatus('錢包初始化中，請稍等 1–2 秒後再試。'); return }
+    if (!wallets?.[0]) { setStatus('找不到可用錢包（請重新登入一次）。'); return }
+    if (!authedEmail || !toEmail.trim()) { setStatus('請填寫 To Email。'); return }
+
     const amt = amountWei.trim()
     if (!amt || isNaN(Number(amt)) || Number(amt) <= 0) {
       setStatus('請填寫要轉的 amount（wei），例如 1000000000000000 代表 0.001 ETH。')
@@ -47,7 +35,6 @@ export function HashTransferUI() {
     }
 
     try {
-      // 優先使用 embedded wallet（不靠外部錢包、不跳錢包 UI）
       const embedded = wallets.find((w: any) => w?.walletClientType === 'privy') || wallets[0]
 
       const data = encodeFunctionData({
@@ -58,17 +45,8 @@ export function HashTransferUI() {
 
       setStatus('送出 EmailHash → EmailHash（Gasless）交易中...')
       const { hash } = await sendTransaction(
-        {
-          chainId: 84532,
-          to: getEmailVaultAddress(),
-          data,
-          // transfer 不帶 value，純 mapping 轉帳
-        },
-        {
-          sponsor: true,
-          address: embedded.address,
-          uiOptions: { showWalletUIs: false },
-        }
+        { chainId: 84532, to: getEmailVaultAddress(), data },
+        { sponsor: true, address: embedded.address, uiOptions: { showWalletUIs: false } }
       )
 
       setTxHash(hash)
@@ -81,35 +59,43 @@ export function HashTransferUI() {
 
   return (
     <div className="ui-card">
-      <div className="text-sm text-white/60">EmailHash 轉帳</div>
-      <div className="mt-1 text-xl font-semibold tracking-tight">從一個 EmailHash 轉到另一個 EmailHash</div>
-      <div className="mt-1 text-sm text-white/60">
-        ⚠️ 非安全版：合約沒有驗證 fromHash 擁有權，任何人知道 fromHash 都能轉走。
+      <div className="brex-section-label">轉帳</div>
+      <div className="brex-section-title">EmailHash 轉帳</div>
+      <div className="brex-section-desc">
+        從一個 EmailHash 轉到另一個 EmailHash（Gasless）。
       </div>
 
-      <div className="mt-4 grid gap-3">
+      {/* 安全提示 */}
+      <div className="mt-3 flex items-start gap-2 rounded-xl border border-yellow-400/20 bg-yellow-400/[0.06] p-3">
+        <span className="mt-0.5 text-yellow-400 text-sm">⚠</span>
+        <span className="text-xs text-yellow-200/70 leading-relaxed">
+          非安全版：合約沒有驗證 fromHash 擁有權，任何人知道 fromHash 都能轉走。
+        </span>
+      </div>
+
+      <div className="mt-5 grid gap-3">
         {!authenticated ? (
-          <div className="rounded-2xl border border-amber-400/30 bg-amber-400/10 p-3 text-sm text-amber-100">
-            此功能需要 Gmail(OAuth) 登入才可用。
-            <div className="mt-2">
+          <div className="ui-status-warn">
+            此功能需要 Gmail (OAuth) 登入才可用。
+            <div className="mt-3">
               <button
                 onClick={login}
-                className="rounded-xl bg-blue-500 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-400 active:bg-blue-600"
+                className="rounded-lg bg-[#FF6B2B] px-4 py-2 text-sm font-semibold text-white hover:bg-[#FF8447]"
               >
-                先使用 Google 登入
+                使用 Google 登入
               </button>
             </div>
           </div>
         ) : (
           <div className="ui-card-subtle">
             <div className="ui-label">From Email（使用登入 Email）</div>
-            <div className="mt-1 break-all text-sm text-white">{authedEmail || '-'}</div>
+            <div className="ui-value">{authedEmail || '-'}</div>
           </div>
         )}
 
         <div className="ui-card-subtle">
           <div className="ui-label">From Hash</div>
-          <div className="mt-1 break-all font-mono text-sm text-white">{fromHash || '-'}</div>
+          <div className="ui-value break-all font-mono text-xs">{fromHash || '-'}</div>
         </div>
 
         <Field label="To Email">
@@ -123,14 +109,14 @@ export function HashTransferUI() {
 
         <div className="ui-card-subtle">
           <div className="ui-label">To Hash</div>
-          <div className="mt-1 break-all font-mono text-sm text-white">{toHash || '-'}</div>
+          <div className="ui-value break-all font-mono text-xs">{toHash || '-'}</div>
         </div>
 
         <Field label="Amount（wei）">
           <input
             value={amountWei}
             onChange={(e) => setAmountWei(e.target.value)}
-            placeholder="1000000000000000  (0.001 ETH)"
+            placeholder="1000000000000000  (= 0.001 ETH)"
             inputMode="numeric"
             className="ui-input"
           />
@@ -144,11 +130,12 @@ export function HashTransferUI() {
           EmailHash 轉帳（Gasless transfer）
         </button>
 
-        {status && <div className="rounded-2xl border border-white/10 bg-black/30 p-3 text-sm text-white/80">{status}</div>}
+        {status && <div className="ui-status">{status}</div>}
+
         {txHash && (
-          <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
-            <div className="text-xs text-white/60">交易 Hash</div>
-            <div className="mt-1 break-all font-mono text-sm text-white">{txHash}</div>
+          <div className="ui-card-subtle">
+            <div className="ui-label">交易 Hash</div>
+            <div className="ui-value break-all font-mono text-xs">{txHash}</div>
           </div>
         )}
       </div>
@@ -156,12 +143,11 @@ export function HashTransferUI() {
   )
 }
 
-function Field(props: { label: string; children: React.ReactNode }) {
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label className="grid gap-2">
-      <div className="text-xs text-white/60">{props.label}</div>
-      {props.children}
+    <label className="grid gap-1.5">
+      <div className="ui-label">{label}</div>
+      {children}
     </label>
   )
 }
-

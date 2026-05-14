@@ -1,0 +1,452 @@
+import { useState, useEffect, useMemo, useCallback } from 'react'
+import { usePrivy, useWallets } from '@privy-io/react-auth'
+import { formatEther, parseEther } from 'viem'
+import { baseSepolia } from 'viem/chains'
+import { hashEmail } from '../lib/email'
+import { EMAIL_VAULT_ABI, getEmailVaultAddress } from '../lib/emailVault'
+import { publicClient, makeWalletClient } from '../lib/viemClients'
+import { getPrivyUserEmail } from '../lib/privyUser'
+import { sendDepositEmailNotification } from '../lib/notify'
+
+// ─── helpers ──────────────────────────────────────────────────────────────
+function fmt(wei: bigint) {
+  const n = parseFloat(formatEther(wei))
+  return n === 0 ? '0.0000' : n.toFixed(4)
+}
+
+async function getExternalAccount(provider: any): Promise<`0x${string}` | undefined> {
+  try {
+    const accounts = (await provider.request({ method: 'eth_accounts' })) as string[]
+    if (accounts?.[0]) return accounts[0] as `0x${string}`
+    const requested = (await provider.request({ method: 'eth_requestAccounts' })) as string[]
+    if (requested?.[0]) return requested[0] as `0x${string}`
+  } catch { /* ignore */ }
+}
+
+async function ensureBaseSepolia(provider: any, walletClient: any) {
+  try {
+    const chainId = await walletClient.getChainId()
+    if (chainId === baseSepolia.id) return
+    try { await walletClient.switchChain({ id: baseSepolia.id }) } catch {
+      await provider.request({
+        method: 'wallet_addEthereumChain',
+        params: [{ chainId: `0x${baseSepolia.id.toString(16)}`, chainName: baseSepolia.name, nativeCurrency: baseSepolia.nativeCurrency, rpcUrls: [baseSepolia.rpcUrls.default.http[0]], blockExplorerUrls: [baseSepolia.blockExplorers?.default.url] }],
+      })
+    }
+  } catch { /* ignore */ }
+}
+
+// ─── SendModal ─────────────────────────────────────────────────────────────
+function SendModal({ open, externalWallet, walletsReady, wallets, onClose, onSuccess }: {
+  open: boolean
+  externalWallet: any
+  walletsReady: boolean
+  wallets: any[]
+  onClose: () => void
+  onSuccess: () => void
+}) {
+  const [toEmail, setToEmail] = useState('')
+  const [amount, setAmount] = useState('')
+  const [status, setStatus] = useState('')
+  const [isError, setIsError] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [success, setSuccess] = useState(false)
+  const [txHash, setTxHash] = useState('')
+
+  const toHash = useMemo(() => (toEmail ? hashEmail(toEmail) : ''), [toEmail])
+
+  function reset() {
+    setToEmail(''); setAmount(''); setStatus(''); setIsError(false)
+    setLoading(false); setSuccess(false); setTxHash('')
+  }
+
+  function handleClose() { onClose(); setTimeout(reset, 250) }
+
+  async function onSend() {
+    setStatus(''); setIsError(false)
+    if (!toEmail.trim() || !amount.trim()) { setStatus('Please fill in all fields.'); setIsError(true); return }
+    if (!wallets?.[0]) { setStatus('Connect a wallet first.'); setIsError(true); return }
+
+    let value: bigint
+    try { value = parseEther(amount as `${number}`) }
+    catch { setStatus('Invalid ETH amount.'); setIsError(true); return }
+
+    setLoading(true)
+    try {
+      const provider = await externalWallet.getEthereumProvider()
+      const walletClient = makeWalletClient(provider)
+      const account = await getExternalAccount(provider)
+      await ensureBaseSepolia(provider, walletClient)
+
+      setStatus('Confirm in your wallet…')
+      const hash = await (walletClient as any).writeContract({
+        chain: baseSepolia,
+        address: getEmailVaultAddress(),
+        abi: EMAIL_VAULT_ABI,
+        functionName: 'deposit',
+        args: [toHash as `0x${string}`],
+        value,
+        account,
+      })
+
+      setTxHash(hash)
+      void sendDepositEmailNotification({ toEmail: toEmail.trim(), amountEth: amount.trim(), txHash: hash })
+      setSuccess(true)
+      onSuccess()
+    } catch (e: any) {
+      setStatus(e?.shortMessage || e?.message || 'Transaction failed.')
+      setIsError(true)
+    } finally { setLoading(false) }
+  }
+
+  return (
+    <div className={`modal-backdrop${open ? ' open' : ''}`} onClick={e => { if (e.target === e.currentTarget) handleClose() }}>
+      <div className="modal">
+        {!success ? (
+          <>
+            <div className="modal-head">
+              <div>
+                <h3>Send ETH</h3>
+                <p>Recipient gets an email and can claim anytime.</p>
+              </div>
+              <button className="modal-close" onClick={handleClose}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="field">
+                <label className="field-label" htmlFor="send-email">Recipient email</label>
+                <div className="input-wrap">
+                  <input className="input" id="send-email" type="email" placeholder="friend@gmail.com"
+                    value={toEmail} onChange={e => setToEmail(e.target.value)} />
+                </div>
+              </div>
+              <div className="field">
+                <label className="field-label" htmlFor="send-amount">Amount</label>
+                <div className="input-wrap">
+                  <input className="input with-suffix" id="send-amount" type="text" inputMode="decimal"
+                    placeholder="0.001" value={amount} onChange={e => setAmount(e.target.value)} />
+                  <span className="input-suffix">ETH</span>
+                </div>
+                {toHash && (
+                  <div className="field-hint">
+                    Email hash: <span className="mono" style={{ fontSize: 11.5 }}>{toHash.slice(0, 10)}…{toHash.slice(-6)}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+            {status && <div className={`modal-status${isError ? ' error' : ''}`}>{status}</div>}
+            <div className="modal-foot">
+              <button className="btn btn-primary btn-block" onClick={onSend} disabled={loading || !walletsReady}>
+                {loading
+                  ? <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" className="spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> Confirming…</>
+                  : 'Send ETH'}
+              </button>
+              <div className="modal-fineprint">Funds are locked in a smart contract until the recipient claims.</div>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="success-wrap">
+              <div className="success-ring">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M5 12.5 10 17 19 7.5" />
+                </svg>
+              </div>
+              <h3 className="success-title">Sent!</h3>
+              <p className="success-sub">
+                A notification email was sent to <b>{toEmail}</b>. They can claim anytime — funds are safe in the vault until then.
+              </p>
+              <div className="tx-summary">
+                <div className="row">
+                  <span className="k">Amount</span>
+                  <span className="v"><b>{amount}</b> ETH</span>
+                </div>
+                <div className="row">
+                  <span className="k">Recipient hash</span>
+                  <span className="v mono">{toHash.slice(0, 10)}…{toHash.slice(-6)}</span>
+                </div>
+                {txHash && (
+                  <div className="row">
+                    <span className="k">Transaction</span>
+                    <a className="v mono" href={`https://sepolia.basescan.org/tx/${txHash}`} target="_blank" rel="noreferrer">
+                      {txHash.slice(0, 8)}…{txHash.slice(-6)} ↗
+                    </a>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="modal-foot">
+              <button className="btn btn-primary btn-block" onClick={handleClose}>Done</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── ClaimModal ────────────────────────────────────────────────────────────
+function ClaimModal({ open, email, emailHash, walletAddress, balanceWei, externalWallet, walletsReady, onClose, onSuccess }: {
+  open: boolean
+  email: string
+  emailHash: string
+  walletAddress: string
+  balanceWei: bigint | null
+  externalWallet: any
+  walletsReady: boolean
+  onClose: () => void
+  onSuccess: () => void
+}) {
+  const [amount, setAmount] = useState('')
+  const [status, setStatus] = useState('')
+  const [isError, setIsError] = useState(false)
+  const [loading, setLoading] = useState(false)
+
+  function handleClose() { onClose(); setTimeout(() => { setAmount(''); setStatus(''); setIsError(false); setLoading(false) }, 250) }
+
+  function fillMax() {
+    if (balanceWei !== null) setAmount(formatEther(balanceWei))
+  }
+
+  async function onClaim() {
+    setStatus(''); setIsError(false)
+    if (!amount.trim()) { setStatus('Enter an amount.'); setIsError(true); return }
+    if (!externalWallet) { setStatus('Connect MetaMask first.'); setIsError(true); return }
+
+    let amountWei: bigint
+    try { amountWei = parseEther(amount as `${number}`) }
+    catch { setStatus('Invalid ETH amount.'); setIsError(true); return }
+
+    setLoading(true)
+    try {
+      const provider = await externalWallet.getEthereumProvider()
+      const walletClient = makeWalletClient(provider)
+      const account = await getExternalAccount(provider)
+      await ensureBaseSepolia(provider, walletClient)
+
+      setStatus('Confirm in your wallet…')
+      await (walletClient as any).writeContract({
+        chain: baseSepolia,
+        address: getEmailVaultAddress(),
+        abi: EMAIL_VAULT_ABI,
+        functionName: 'claim',
+        args: [emailHash as `0x${string}`, amountWei],
+        account,
+      })
+
+      onSuccess()
+      handleClose()
+    } catch (e: any) {
+      setStatus(e?.shortMessage || e?.message || 'Transaction failed.')
+      setIsError(true)
+    } finally { setLoading(false) }
+  }
+
+  const available = balanceWei !== null ? `${fmt(balanceWei)} ETH` : '—'
+
+  return (
+    <div className={`modal-backdrop${open ? ' open' : ''}`} onClick={e => { if (e.target === e.currentTarget) handleClose() }}>
+      <div className="modal">
+        <div className="modal-head">
+          <div>
+            <h3>Claim to your wallet</h3>
+            <p>Withdraw your vault balance to your connected MetaMask wallet.</p>
+          </div>
+          <button className="modal-close" onClick={handleClose}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
+        <div className="modal-body">
+          <div className="readrow">
+            <span className="key">Your email</span>
+            <span className="val">{email || '—'}</span>
+          </div>
+          <div className="readrow">
+            <span className="key">Your wallet</span>
+            <span className="val mono">{walletAddress ? `${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)}` : 'Not connected'}</span>
+          </div>
+          <div className="field" style={{ marginTop: 18 }}>
+            <label className="field-label" htmlFor="claim-amount">Amount to claim</label>
+            <div className="input-wrap">
+              <input className="input with-max" id="claim-amount" type="text" inputMode="decimal"
+                placeholder="0.000" value={amount} onChange={e => setAmount(e.target.value)} />
+              <button className="input-max" onClick={fillMax}>Max</button>
+            </div>
+            <div className="field-hint">
+              Available: <b style={{ color: 'var(--ink)', fontWeight: 600 }}>{available}</b>
+            </div>
+          </div>
+        </div>
+        {status && <div className={`modal-status${isError ? ' error' : ''}`}>{status}</div>}
+        <div className="modal-foot">
+          <button className="btn btn-primary btn-block" onClick={onClaim} disabled={loading || !walletsReady}>
+            {loading
+              ? <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" className="spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> Confirming…</>
+              : 'Claim ETH'}
+          </button>
+          <div className="modal-fineprint">Gas is paid from your connected wallet on Base Sepolia.</div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Dashboard ─────────────────────────────────────────────────────────────
+export function Dashboard() {
+  const { logout, user, connectWallet } = usePrivy()
+  const { wallets, ready: walletsReady } = useWallets()
+
+  const email = getPrivyUserEmail(user)
+  const emailHash = useMemo(() => (email ? hashEmail(email) : ''), [email])
+
+  const externalWallet = walletsReady
+    ? wallets?.find((w: any) => {
+        if (w?.connectorType) return true
+        if (w?.walletClientType && w.walletClientType !== 'privy') return true
+        if (w?.type === 'wallet' && w?.walletClientType !== 'privy') return true
+        return false
+      })
+    : undefined
+
+  const walletAddress: string = externalWallet?.address || ''
+
+  const [balanceWei, setBalanceWei] = useState<bigint | null>(null)
+  const [sendOpen, setSendOpen] = useState(false)
+  const [claimOpen, setClaimOpen] = useState(false)
+
+  const fetchBalance = useCallback(async () => {
+    if (!emailHash) return
+    try {
+      const bal = await (publicClient as any).readContract({
+        chain: baseSepolia,
+        address: getEmailVaultAddress(),
+        abi: EMAIL_VAULT_ABI,
+        functionName: 'balances',
+        args: [emailHash as `0x${string}`],
+      }) as bigint
+      setBalanceWei(bal)
+    } catch (e) { console.error(e) }
+  }, [emailHash])
+
+  useEffect(() => { fetchBalance() }, [fetchBalance])
+
+  const displayBalance = balanceWei !== null ? fmt(balanceWei) : '—'
+  const firstName = email ? email.split('@')[0] : ''
+  const vaultAddr = getEmailVaultAddress()
+
+  return (
+    <>
+      {/* ── Nav ── */}
+      <nav className="nav">
+        <div className="nav-inner">
+          <div className="brand">
+            <span className="brand-mark" />
+            <span>hashcash</span>
+          </div>
+          <div className="nav-right">
+            {walletAddress ? (
+              <span className="wallet-chip">
+                <span className="wallet-chip-dot" />
+                <span className="mono">{walletAddress.slice(0, 6)}…{walletAddress.slice(-4)}</span>
+              </span>
+            ) : (
+              <button className="btn btn-ghost btn-sm" onClick={() => connectWallet()}>
+                Connect Wallet
+              </button>
+            )}
+            <button className="btn btn-ghost" onClick={logout}>Sign out</button>
+          </div>
+        </div>
+      </nav>
+
+      {/* ── Dashboard ── */}
+      <div className="dashboard-wrap">
+        <div className="dash-card">
+          {firstName && (
+            <div className="dash-eyebrow">
+              <div className="label-eyebrow">Welcome back, {firstName}</div>
+            </div>
+          )}
+
+          <div className="balance-card">
+            <div className="balance-label label-eyebrow">Your Vault Balance</div>
+            <div className="balance-amount">
+              <span className="num h-balance">{displayBalance}</span>
+              {balanceWei !== null && <span className="unit">ETH</span>}
+            </div>
+            <div className="balance-usd">
+              {balanceWei !== null ? `≈ $${(parseFloat(formatEther(balanceWei)) * 3500).toFixed(2)} USD` : ' '}
+            </div>
+
+            <div className="badge-row">
+              <span className="badge network">
+                <span className="dot" />
+                Base Sepolia
+              </span>
+              {email && (
+                <span className="badge">
+                  <svg className="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>
+                  {email}
+                </span>
+              )}
+            </div>
+
+            <div className="action-row">
+              <button className="btn btn-primary btn-block" onClick={() => setSendOpen(true)}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></svg>
+                Send
+              </button>
+              <button className="btn btn-outline btn-block" onClick={() => setClaimOpen(true)}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                Claim to Wallet
+              </button>
+            </div>
+          </div>
+
+          {/* Recent activity placeholder */}
+          <div className="recent">
+            <div className="recent-head">
+              <span className="label-eyebrow">Recent activity</span>
+              <button className="btn btn-ghost" style={{ height: 28, padding: '0 10px', fontSize: 12 }} onClick={fetchBalance}>
+                Refresh ↻
+              </button>
+            </div>
+            <div style={{ padding: '16px 14px', textAlign: 'center', color: 'var(--mute)', fontSize: 13 }}>
+              No transaction history — connect a subgraph to see past activity.
+            </div>
+          </div>
+
+          <div className="dash-foot">
+            Vault{' '}
+            <a className="mono" href={`https://sepolia.basescan.org/address/${vaultAddr}`} target="_blank" rel="noreferrer">
+              {vaultAddr ? `${vaultAddr.slice(0, 6)}…${vaultAddr.slice(-4)}` : '—'} ↗
+            </a>{' '}
+            · Network <span>Base Sepolia</span>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Modals ── */}
+      <SendModal
+        open={sendOpen}
+        externalWallet={externalWallet}
+        walletsReady={walletsReady}
+        wallets={wallets || []}
+        onClose={() => setSendOpen(false)}
+        onSuccess={() => { setSendOpen(false); fetchBalance() }}
+      />
+      <ClaimModal
+        open={claimOpen}
+        email={email || ''}
+        emailHash={emailHash}
+        walletAddress={walletAddress}
+        balanceWei={balanceWei}
+        externalWallet={externalWallet}
+        walletsReady={walletsReady}
+        onClose={() => setClaimOpen(false)}
+        onSuccess={() => { setClaimOpen(false); fetchBalance() }}
+      />
+    </>
+  )
+}

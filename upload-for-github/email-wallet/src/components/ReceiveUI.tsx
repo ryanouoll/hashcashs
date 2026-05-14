@@ -44,51 +44,53 @@ export function ReceiveUI() {
 
   return (
     <div className="ui-card">
-      <div className="text-sm text-white/60">接收</div>
-      <div className="mt-1 text-xl font-semibold tracking-tight">查詢我的 Email 金庫餘額</div>
+      <div className="brex-section-label">接收</div>
+      <div className="brex-section-title">我的 Email 金庫</div>
+      <div className="brex-section-desc">查詢你的 Email Hash 對應的鏈上餘額。</div>
 
-      <div className="mt-4 grid gap-3">
+      <div className="mt-5 grid gap-3">
+
+        {/* 餘額大字顯示 */}
+        <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-white/[0.05] to-white/[0.02] p-5 text-center">
+          <div className="text-xs font-medium uppercase tracking-widest text-white/40 mb-2">可提領餘額</div>
+          <div className="text-4xl font-bold tracking-tight text-white">
+            {balanceWei === null ? '—' : formatEther(balanceWei)}
+          </div>
+          {balanceWei !== null && (
+            <div className="mt-1 text-sm text-white/40">ETH</div>
+          )}
+          {balanceWei !== null && (
+            <div className="mt-2 font-mono text-xs text-white/30">{balanceWei.toString()} wei</div>
+          )}
+        </div>
+
         <div className="ui-card-subtle">
           <div className="ui-label">我的 Email</div>
-          <div className="mt-1 break-all text-sm text-white">{email || '-'}</div>
+          <div className="ui-value">{email || '-'}</div>
         </div>
 
         <div className="ui-card-subtle">
           <div className="ui-label">我的 Email Hash (keccak256)</div>
-          <div className="mt-1 break-all font-mono text-sm text-white">{myHash || '-'}</div>
+          <div className="ui-value break-all font-mono text-xs">{myHash || '-'}</div>
         </div>
 
         {!authenticated && (
-          <div className="rounded-2xl border border-amber-400/30 bg-amber-400/10 p-3 text-sm text-amber-100">
+          <div className="ui-status-warn">
             此功能只能查詢你 Google OAuth 登入信箱的餘額。
-            <div className="mt-2">
-              <button onClick={login} className="ui-button-primary">
-                先使用 Google 登入
+            <div className="mt-3">
+              <button onClick={login} className="rounded-lg bg-[#FF6B2B] px-4 py-2 text-sm font-semibold text-white hover:bg-[#FF8447]">
+                使用 Google 登入
               </button>
             </div>
           </div>
         )}
 
-        <div className="ui-card-subtle">
-          <div className="ui-label">餘額</div>
-          <div className="mt-1 text-2xl font-semibold tracking-tight text-white">
-            {balanceWei === null ? '-' : `${formatEther(balanceWei)} ETH`}
-          </div>
-          <div className="mt-1 font-mono text-xs text-white/50">{balanceWei === null ? '' : `${balanceWei} wei`}</div>
-        </div>
-
-        <button
-          onClick={refresh}
-          className="ui-button-secondary"
-        >
+        <button onClick={refresh} className="ui-button-secondary">
           重新整理餘額
         </button>
 
-        {status && (
-          <div className="rounded-2xl border border-white/10 bg-black/30 p-3 text-sm text-white/80">{status}</div>
-        )}
+        {status && <div className="ui-status">{status}</div>}
       </div>
     </div>
   )
 }
-
