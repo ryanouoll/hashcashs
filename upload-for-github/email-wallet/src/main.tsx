@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 import { PrivyProvider } from '@privy-io/react-auth'
+import { SmartWalletsProvider } from '@privy-io/react-auth/smart-wallets'
 import { ErrorBoundary } from './ErrorBoundary'
 
 const privyAppId = import.meta.env.VITE_PRIVY_APP_ID
@@ -22,9 +23,14 @@ createRoot(document.getElementById('root')!).render(
               walletChainType: 'ethereum-only',
               walletList: ['metamask', 'coinbase_wallet', 'rainbow', 'wallet_connect', 'detected_ethereum_wallets'],
             },
+            embeddedWallets: {
+              ethereum: { createOnLogin: 'users-without-wallets' },
+            },
           }}
         >
-          <App />
+          <SmartWalletsProvider>
+            <App />
+          </SmartWalletsProvider>
         </PrivyProvider>
       </ErrorBoundary>
     ) : (

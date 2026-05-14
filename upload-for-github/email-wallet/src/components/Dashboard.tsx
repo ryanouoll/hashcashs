@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { usePrivy, useWallets } from '@privy-io/react-auth'
+import { useSmartWallets } from '@privy-io/react-auth/smart-wallets'
 import { formatEther, parseEther } from 'viem'
 import { baseSepolia } from 'viem/chains'
 import { hashEmail } from '../lib/email'
@@ -162,13 +163,12 @@ function DepositModal({ open, email, emailHash, externalWallet, walletsReady, on
 }
 
 // ─── SendModal ─────────────────────────────────────────────────────────────
-// Uses vault transfer(from, to, amount) — no external wallet needed, Privy sponsors gas
-function SendModal({ open, fromEmailHash, balanceWei, walletsReady, wallets, onClose, onSuccess }: {
+// Uses smart wallet writeContract — gas sponsored, zero popup
+function SendModal({ open, fromEmailHash, balanceWei, smartClient, onClose, onSuccess }: {
   open: boolean
   fromEmailHash: string
   balanceWei: bigint | null
-  walletsReady: boolean
-  wallets: any[]
+  smartClient: any
   onClose: () => void
   onSuccess: () => void
 }) {
@@ -196,12 +196,7 @@ function SendModal({ open, fromEmailHash, balanceWei, walletsReady, wallets, onC
   async function onSend() {
     setStatus(''); setIsError(false)
     if (!toEmail.trim() || !amount.trim()) { setStatus('Please fill in all fields.'); setIsError(true); return }
-
-    // use Privy embedded wallet — no MetaMask needed
-    const privyWallet = wallets?.find((w: any) =>
-      w?.walletClientType === 'privy' || w?.connectorType === 'embedded'
-    )
-    if (!privyWallet) { setStatus('Privy wallet not ready. Try signing out and back in.'); setIsError(true); return }
+    if (!smartClient) { setStatus('Smart wallet not ready. Try signing out and back in.'); setIsError(true); return }
 
     let amountWei: bigint
     try { amountWei = parseEther(amount as `${number}`) }
@@ -213,19 +208,13 @@ function SendModal({ open, fromEmailHash, balanceWei, walletsReady, wallets, onC
 
     setLoading(true)
     try {
-      const provider = await privyWallet.getEthereumProvider()
-      const walletClient = makeWalletClient(provider)
-      const account = await getExternalAccount(provider)
-      await ensureBaseSepolia(provider, walletClient)
-
       setStatus('Sending…')
-      const hash = await (walletClient as any).writeContract({
-        chain: baseSepolia,
+      const hash = await smartClient.writeContract({
         address: getEmailVaultAddress(),
         abi: EMAIL_VAULT_ABI,
         functionName: 'transfer',
         args: [fromEmailHash as `0x${string}`, toHash as `0x${string}`, amountWei],
-        account,
+        chain: baseSepolia,
       })
 
       setTxHash(hash)
@@ -279,7 +268,7 @@ function SendModal({ open, fromEmailHash, balanceWei, walletsReady, wallets, onC
             </div>
             {status && <div className={`modal-status${isError ? ' error' : ''}`}>{status}</div>}
             <div className="modal-foot">
-              <button className="btn btn-primary btn-block" onClick={onSend} disabled={loading || !walletsReady}>
+              <button className="btn btn-primary btn-block" onClick={onSend} disabled={loading || !smartClient}>
                 {loading
                   ? <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" className="spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> Sending…</>
                   : 'Send ETH'}
@@ -438,6 +427,7 @@ function ClaimModal({ open, email, emailHash, walletAddress, balanceWei, externa
 export function Dashboard() {
   const { logout, user, connectWallet, unlinkWallet } = usePrivy()
   const { wallets, ready: walletsReady } = useWallets()
+  const { client: smartClient } = useSmartWallets()
 
   const email = getPrivyUserEmail(user)
   const emailHash = useMemo(() => (email ? hashEmail(email) : ''), [email])
@@ -613,8 +603,7 @@ export function Dashboard() {
         open={sendOpen}
         fromEmailHash={emailHash}
         balanceWei={balanceWei}
-        walletsReady={walletsReady}
-        wallets={wallets || []}
+        smartClient={smartClient}
         onClose={() => setSendOpen(false)}
         onSuccess={() => { setSendOpen(false); fetchBalance() }}
       />
