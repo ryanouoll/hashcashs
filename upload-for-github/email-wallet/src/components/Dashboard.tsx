@@ -560,12 +560,12 @@ export function Dashboard() {
             {!externalWallet && (
               <div className="wallet-banner">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-4 0v2"/><circle cx="12" cy="14" r="1" fill="currentColor"/></svg>
-                <span>Connect a wallet to send or claim</span>
+                <span>Connect a wallet to deposit or claim</span>
                 <button className="btn btn-primary btn-sm" onClick={() => connectWallet()}>Connect</button>
               </div>
             )}
             <div className="action-row">
-              <button className="btn btn-primary btn-block" onClick={() => externalWallet ? setSendOpen(true) : connectWallet()}>
+              <button className="btn btn-primary btn-block" onClick={() => setSendOpen(true)}>
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></svg>
                 Send
               </button>
