@@ -19,6 +19,16 @@ export function HashTransferUI() {
   const fromHash = useMemo(() => (authedEmail ? hashEmail(authedEmail) : ''), [authedEmail])
   const toHash = useMemo(() => (toEmail ? hashEmail(toEmail) : ''), [toEmail])
 
+  // 衍生狀態：是否已偵測到 Privy 內建錢包（gasless 必要條件）
+  const embeddedReady = useMemo(
+    () =>
+      walletsReady &&
+      Boolean(
+        wallets?.find((w: any) => w?.walletClientType === 'privy' || w?.connectorType === 'embedded')
+      ),
+    [walletsReady, wallets]
+  )
+
   async function onTransfer() {
     setStatus('')
     setTxHash('')
@@ -46,10 +56,35 @@ export function HashTransferUI() {
       return
     }
 
-    try {
-      // 優先使用 embedded wallet（不靠外部錢包、不跳錢包 UI）
-      const embedded = wallets.find((w: any) => w?.walletClientType === 'privy') || wallets[0]
+    // 嚴格選 Privy embedded wallet。
+    // ⚠️ 禁止 fallback 到 wallets[0]：那會把 MetaMask 地址傳給 useSendTransaction，
+    //    Privy 的 sponsor relay 只認自己的內建錢包池 → 必拋
+    //    "No embedded or connected wallet found for address"。
+    const embedded = wallets.find(
+      (w: any) => w?.walletClientType === 'privy' || w?.connectorType === 'embedded'
+    )
 
+    // 印出目前所有錢包，方便診斷（生產可移除）
+    // eslint-disable-next-line no-console
+    console.log(
+      '[HashTransferUI] wallets:',
+      wallets.map((w: any) => ({
+        address: w?.address,
+        walletClientType: w?.walletClientType,
+        connectorType: w?.connectorType,
+      })),
+      'pickedEmbedded:',
+      embedded?.address || null
+    )
+
+    if (!embedded) {
+      setStatus(
+        '找不到內建錢包。請完全登出後重新用 Google 登入一次（Privy 會自動建立 gasless 內建錢包）。'
+      )
+      return
+    }
+
+    try {
       const data = encodeFunctionData({
         abi: EMAIL_VAULT_ABI,
         functionName: 'transfer',
@@ -57,7 +92,7 @@ export function HashTransferUI() {
       })
 
       setStatus('送出 EmailHash → EmailHash（Gasless）交易中...')
-      const { hash } = await sendTransaction(
+      const result = await sendTransaction(
         {
           chainId: 84532,
           to: getEmailVaultAddress(),
@@ -70,12 +105,34 @@ export function HashTransferUI() {
           uiOptions: { showWalletUIs: false },
         }
       )
+      const hash = (result as any)?.hash || (result as any)?.transactionHash || String(result)
 
       setTxHash(hash)
       setStatus('交易已送出，等待鏈上確認。')
     } catch (e: any) {
-      console.error(e)
-      setStatus(`交易失敗：${e?.shortMessage || e?.message || 'unknown error'}`)
+      console.error('[HashTransferUI] sendTransaction error:', e)
+      const raw = e?.shortMessage || e?.message || 'unknown error'
+
+      // 把已知的 Privy 錯誤映射成中文操作指引
+      if (/No embedded or connected wallet found/i.test(raw)) {
+        setStatus(
+          '送出失敗：Privy 找不到對應的內建錢包。請完全登出後重新用 Google 登入；若仍失敗，去 Privy Dashboard 確認 Embedded Wallets 已啟用、Base Sepolia (84532) 在允許清單。'
+        )
+        return
+      }
+      if (/sponsor/i.test(raw) && /not.*allow|disabled|policy/i.test(raw)) {
+        setStatus(
+          '送出失敗：Privy Gas Sponsorship 未啟用或政策限制。請去 Privy Dashboard → Gas sponsorship 啟用，並把 Base Sepolia 加進 Networks。'
+        )
+        return
+      }
+      if (/insufficient/i.test(raw) && /balance/i.test(raw)) {
+        setStatus(
+          '送出失敗：合約裡這個 emailHash 的 vault 餘額不足。請先用 SendUI 從錢包 deposit 進 vault，或減少 amount。'
+        )
+        return
+      }
+      setStatus(`交易失敗：${raw}`)
     }
   }
 
@@ -86,6 +143,11 @@ export function HashTransferUI() {
       <div className="mt-1 text-sm text-white/60">
         ⚠️ 非安全版：合約沒有驗證 fromHash 擁有權，任何人知道 fromHash 都能轉走。
       </div>
+      {authenticated && walletsReady && !embeddedReady && (
+        <div className="mt-2 rounded-2xl border border-amber-400/30 bg-amber-400/10 p-3 text-sm text-amber-100">
+          尚未偵測到 Privy 內建錢包。請完全登出後重新用 Google 登入一次；若已在 Privy Dashboard 啟用 Embedded Wallets，就會自動建立。
+        </div>
+      )}
 
       <div className="mt-4 grid gap-3">
         {!authenticated ? (

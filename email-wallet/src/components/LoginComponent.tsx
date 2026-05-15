@@ -128,7 +128,10 @@ export function LoginComponent() {
         <div>
           <div className="text-sm text-white/60">登入</div>
           <div className="mt-1 text-xl font-semibold tracking-tight">登入 / 連結錢包</div>
-          <div className="mt-1 text-sm text-white/60">此版本不建立內建錢包，只支援連結外部錢包（MetaMask）。</div>
+          <div className="mt-1 text-sm text-white/60">
+            Google 登入會自動建立 Privy 內建錢包（用於 gasless vault-to-vault transfer）。
+            連結 MetaMask 用於 deposit（從錢包入金）與 claim（把 vault 餘額提到錢包）。
+          </div>
           <div className="mt-2 text-xs text-white/50">錢包狀態：{walletsReady ? (isConnected ? '已連結' : '未連結') : '初始化中...'}</div>
         </div>
         <div className="flex flex-col items-end gap-2">

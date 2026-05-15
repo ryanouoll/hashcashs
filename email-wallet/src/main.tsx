@@ -21,6 +21,13 @@ createRoot(document.getElementById('root')!).render(
             walletChainType: 'ethereum-only',
             walletList: ['metamask', 'coinbase_wallet', 'rainbow', 'wallet_connect', 'detected_ethereum_wallets'],
           },
+          // Gasless vault-to-vault transfer 需要 Privy embedded wallet
+          // 沒有此設定 → Google 登入後 wallets 陣列裡不會有 walletClientType==='privy' 的內建錢包
+          // → useSendTransaction({ sponsor:true }) 找不到 embedded address 就會拋
+          //   "No embedded or connected wallet found for address"
+          embeddedWallets: {
+            ethereum: { createOnLogin: 'users-without-wallets' },
+          },
         }}
       >
         <ErrorBoundary>

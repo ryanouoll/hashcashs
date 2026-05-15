@@ -24,6 +24,8 @@ createRoot(document.getElementById('root')!).render(
             },
             embeddedWallets: {
               showWalletUIs: false,
+              // 自動為 Google 登入的用戶建立內建錢包，gasless transfer / useSendTransaction({sponsor:true}) 才會有 address
+              ethereum: { createOnLogin: 'users-without-wallets' },
             },
           }}
         >
