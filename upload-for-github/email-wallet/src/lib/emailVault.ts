@@ -102,14 +102,14 @@ export const USDC_ABI = [
 ] as const satisfies Abi
 
 /**
- * EmailVaultUSDC 合約地址。
- * Base Sepolia 預設用最新部署的版本；可被 env 覆蓋（mainnet 或日後升級時用）。
+ * EmailVaultUSDC 合約地址（Base Sepolia）。
+ * ⚠️ 不再讀 import.meta.env.VITE_EMAIL_VAULT_ADDRESS — Cloudflare 上的舊 env
+ *    指向舊 ETH 版合約，會讓 USDC ABI 呼叫 revert。日後要升級合約直接改這常數。
  */
-const DEFAULT_VAULT_BASE_SEPOLIA = '0xE856d828bD4DB6123b5d6C6C7405432eC722dA17'
+const VAULT_BASE_SEPOLIA = '0xE856d828bD4DB6123b5d6C6C7405432eC722dA17'
 
 export function getEmailVaultAddress(): `0x${string}` {
-  const addr = import.meta.env.VITE_EMAIL_VAULT_ADDRESS || DEFAULT_VAULT_BASE_SEPOLIA
-  return addr as `0x${string}`
+  return VAULT_BASE_SEPOLIA as `0x${string}`
 }
 
 export function getUsdcAddress(): `0x${string}` {
