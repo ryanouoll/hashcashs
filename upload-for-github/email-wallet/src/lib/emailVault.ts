@@ -101,10 +101,15 @@ export const USDC_ABI = [
   },
 ] as const satisfies Abi
 
+/**
+ * EmailVaultUSDC 合約地址。
+ * Base Sepolia 預設用最新部署的版本；可被 env 覆蓋（mainnet 或日後升級時用）。
+ */
+const DEFAULT_VAULT_BASE_SEPOLIA = '0xE856d828bD4DB6123b5d6C6C7405432eC722dA17'
+
 export function getEmailVaultAddress(): `0x${string}` {
-  const addr = import.meta.env.VITE_EMAIL_VAULT_ADDRESS
-  if (!addr) throw new Error('缺少 VITE_EMAIL_VAULT_ADDRESS')
-  return addr
+  const addr = import.meta.env.VITE_EMAIL_VAULT_ADDRESS || DEFAULT_VAULT_BASE_SEPOLIA
+  return addr as `0x${string}`
 }
 
 export function getUsdcAddress(): `0x${string}` {
