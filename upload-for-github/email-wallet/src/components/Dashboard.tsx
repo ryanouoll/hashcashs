@@ -123,7 +123,23 @@ function DepositModal({ open, email, emailHash, externalWallet, walletsReady, on
       setSuccess(true)
       onSuccess()
     } catch (e: any) {
-      setStatus(e?.shortMessage || e?.message || 'Transaction failed.')
+      const raw = e?.shortMessage || e?.message || 'Transaction failed.'
+      // 映射常見錯誤到可讀訊息
+      if (/rate limit/i.test(raw)) {
+        setStatus(
+          'RPC 節點限流（你 MetaMask 的 Base Sepolia RPC 太忙）。請等 30 秒再試，或去 MetaMask → 設定 → 網路 → Base Sepolia → RPC URL 改成 https://base-sepolia-rpc.publicnode.com'
+        )
+      } else if (/insufficient.*balance|exceeds balance/i.test(raw)) {
+        setStatus('Wallet USDC 不足。請去 https://faucet.circle.com 領 Base Sepolia USDC。')
+      } else if (/user rejected|user denied/i.test(raw)) {
+        setStatus('你在錢包按了拒絕。')
+      } else if (/exceeds max transaction gas/i.test(raw)) {
+        setStatus(
+          '交易模擬失敗（通常是合約地址錯或錢包沒 USDC）。請確認 MetaMask 在 Base Sepolia 鏈，且該錢包有 USDC。'
+        )
+      } else {
+        setStatus(raw)
+      }
       setIsError(true)
     } finally { setLoading(false) }
   }
