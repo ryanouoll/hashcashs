@@ -86,6 +86,19 @@ function DepositModal({ open, email, emailHash, externalWallet, walletsReady, on
       const vault = getEmailVaultAddress()
       const usdc = getUsdcAddress()
 
+      // 0. 先檢查使用者錢包有沒有足夠 USDC（不然 deposit 一定 revert）
+      const usdcBal = (await (publicClient as any).readContract({
+        address: usdc, abi: USDC_ABI, functionName: 'balanceOf', args: [account],
+      })) as bigint
+      if (usdcBal < amountWei) {
+        setStatus(
+          `Wallet has only $${formatUnits(usdcBal, USDC_DECIMALS)} USDC. Get testnet USDC from faucet.circle.com (Base Sepolia → USDC).`
+        )
+        setIsError(true)
+        setLoading(false)
+        return
+      }
+
       // 1. 檢查 USDC allowance；不足就先 approve
       const allowance = (await (publicClient as any).readContract({
         address: usdc, abi: USDC_ABI, functionName: 'allowance', args: [account, vault],
