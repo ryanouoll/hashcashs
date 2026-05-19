@@ -135,7 +135,7 @@ These are tracked in `contracts/EmailVaultUSDC.sol` as comments and in the test 
 
 Built by an 18-year-old, currently a student in Taiwan. First version (ETH-only, no ownership) shipped in 6 weeks. This USDC version with gas sponsorship is iteration 13.
 
-The product was tested with my mother (60), grandmother (80), and computer science classmates. The grandmothers can use it; the classmates love the UX. The next milestone is proving 10 web3 companies will pay to use it for their non-crypto contractors.
+The product was tested with my mother (50), grandmother (80), and computer science classmates. The grandmothers can use it; the classmates love the UX. The next milestone is proving 10 web3 companies will pay to use it for their non-crypto contractors.
 
 **Reach out:** open an issue on this repo.
 
