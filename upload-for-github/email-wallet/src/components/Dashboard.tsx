@@ -83,6 +83,15 @@ function DepositModal({ open, email, emailHash, externalWallet, walletsReady, on
       const account = await getExternalAccount(provider)
       await ensureBaseSepolia(provider, walletClient)
 
+      // 嚴格 chain 驗證：上面 ensureBaseSepolia 可能因為使用者拒絕切換而靜默失敗
+      const currentChain = await walletClient.getChainId()
+      if (currentChain !== baseSepolia.id) {
+        setStatus(
+          `錢包目前在 chainId ${currentChain}，必須切到 Base Sepolia (84532) 才能存款。請在 MetaMask 右上角切換網路。`
+        )
+        setIsError(true); setLoading(false); return
+      }
+
       const vault = getEmailVaultAddress()
       const usdc = getUsdcAddress()
 
@@ -94,27 +103,27 @@ function DepositModal({ open, email, emailHash, externalWallet, walletsReady, on
         setStatus(
           `Wallet has only $${formatUnits(usdcBal, USDC_DECIMALS)} USDC. Get testnet USDC from faucet.circle.com (Base Sepolia → USDC).`
         )
-        setIsError(true)
-        setLoading(false)
-        return
+        setIsError(true); setLoading(false); return
       }
 
-      // 1. 檢查 USDC allowance；不足就先 approve
+      // 1. 檢查 USDC allowance；不足就 approve 一個超大數（infinite approve）
+      //    → 之後同一個 vault 不用再 approve，只需要 1 tx 就能 deposit
       const allowance = (await (publicClient as any).readContract({
         address: usdc, abi: USDC_ABI, functionName: 'allowance', args: [account, vault],
       })) as bigint
+      const MAX_UINT256 = (1n << 256n) - 1n
       if (allowance < amountWei) {
-        setStatus('Approving USD spending… (1/2)')
+        setStatus('Approving USD spending… (one-time setup, 1/2)')
         const approveHash = await (walletClient as any).writeContract({
           chain: baseSepolia, address: usdc, abi: USDC_ABI, functionName: 'approve',
-          args: [vault, amountWei], account,
+          args: [vault, MAX_UINT256], account,  // ← 改 infinite approve
         })
-        // 等 approve 上鏈才能進 deposit
+        setStatus('Waiting for approve to confirm…')
         await (publicClient as any).waitForTransactionReceipt({ hash: approveHash, timeout: 60_000 })
       }
 
       // 2. Deposit
-      setStatus('Depositing… (2/2)')
+      setStatus(allowance < amountWei ? 'Depositing… (2/2)' : 'Depositing…')
       const hash = await (walletClient as any).writeContract({
         chain: baseSepolia, address: vault, abi: EMAIL_VAULT_ABI, functionName: 'deposit',
         args: [emailHash as `0x${string}`, amountWei], account,
