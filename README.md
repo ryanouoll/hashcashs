@@ -2,7 +2,7 @@
 
 **Pay USD to anyone's email. Recipients don't need a crypto wallet.**
 
-🌐 **Live demo:** [hashcashs.pages.dev](https://hashcashs.pages.dev) · 🇹🇼 **[中文版說明](./README.zh-TW.md)**
+🌐 **Live demo:** **[cfoing.io](https://cfoing.io)** (or [hashcashs.pages.dev](https://hashcashs.pages.dev)) · 🇹🇼 **[中文版說明](./README.zh-TW.md)**
 
 ---
 
@@ -70,7 +70,7 @@ The friction points that blocked email-as-wallet ten years ago are gone. The mar
 
 | | |
 |---|---|
-| **Frontend** | [hashcashs.pages.dev](https://hashcashs.pages.dev) |
+| **Frontend** | **[cfoing.io](https://cfoing.io)** · [hashcashs.pages.dev](https://hashcashs.pages.dev) (mirror) |
 | **Smart contract** | [`0xE856d828bD4DB6123b5d6C6C7405432eC722dA17`](https://sepolia.basescan.org/address/0xE856d828bD4DB6123b5d6C6C7405432eC722dA17#code) on Base Sepolia (verified) |
 | **USDC token** | [`0x036CbD53842c5426634e7929541eC2318f3dCF7e`](https://sepolia.basescan.org/address/0x036CbD53842c5426634e7929541eC2318f3dCF7e) (Circle official) |
 | **Chain** | Base Sepolia (testnet) — chainId 84532 |
