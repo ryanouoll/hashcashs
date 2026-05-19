@@ -45,6 +45,12 @@ export function SendUI() {
       setStatus('請填寫對方 Email 與 ETH 數量。')
       return
     }
+    // 基本 email 格式檢查 — 擋掉手滑亂打把錢丟進無人能領的 hash
+    const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    if (!EMAIL_RE.test(toEmail.trim())) {
+      setStatus('對方 Email 格式不正確（需要類似 someone@domain.com）。')
+      return
+    }
     if (!wallets?.[0]) {
       setStatus('請先「連結錢包（MetaMask）」。')
       return
@@ -55,6 +61,10 @@ export function SendUI() {
       value = parseEther(ethAmount as `${number}`)
     } catch {
       setStatus('ETH 數量格式不正確。')
+      return
+    }
+    if (value <= 0n) {
+      setStatus('ETH 數量必須大於 0。')
       return
     }
 
