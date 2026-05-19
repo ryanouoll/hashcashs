@@ -286,14 +286,15 @@ input { font-family: inherit; }
   padding: 4px 10px; border-radius: 9999px; font-weight: 600;
 }
 .env-status .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
-.eth-coin {
-  position: absolute; width: 96px; height: 96px; border-radius: 50%;
-  background: linear-gradient(160deg, #1F1F1F, #2a2a2a 50%, #0D0D0D);
+.usd-coin {
+  position: absolute; width: 84px; height: 84px; border-radius: 50%;
+  background: linear-gradient(160deg, #FF6B2B, #FF8E5A 55%, #E75A1E);
   color: #fff; display: flex; align-items: center; justify-content: center;
-  top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-8deg); z-index: 4;
-  box-shadow: 0 16px 40px -12px rgba(13,13,13,0.4), inset 0 1px 0 rgba(255,255,255,0.12);
+  top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-6deg); z-index: 4;
+  box-shadow: 0 16px 40px -12px rgba(231,90,30,0.45), inset 0 1px 0 rgba(255,255,255,0.25);
+  font-size: 38px; font-weight: 700; line-height: 1;
 }
-.eth-coin svg { width: 36px; height: 36px; }
+.usd-coin span { display: inline-block; transform: translateY(-1px); }
 .route-line { position: absolute; inset: 0; pointer-events: none; z-index: 0; }
 
 /* ─── Features section ───────────────────────────────────────────── */
@@ -562,4 +563,6 @@ input { font-family: inherit; }
   .footer-inner { flex-direction: column; align-items: flex-start; }
   .nav-inner { padding: 0 20px; }
   .cta-strip { margin: 0 16px 64px; padding: 28px; }
+  /* 手機隱藏所有 hero 裝飾（卡片 + USD 硬幣 + 路徑）— 避免擋住內容、節省捲動 */
+  .hero-art { display: none; }
 }

@@ -1,17 +1,26 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { usePrivy, useWallets, useSendTransaction } from '@privy-io/react-auth'
-import { formatEther, parseEther, encodeFunctionData } from 'viem'
+import { formatUnits, parseUnits, encodeFunctionData } from 'viem'
 import { baseSepolia } from 'viem/chains'
 import { hashEmail } from '../lib/email'
-import { EMAIL_VAULT_ABI, getEmailVaultAddress } from '../lib/emailVault'
+import {
+  EMAIL_VAULT_ABI,
+  USDC_ABI,
+  USDC_DECIMALS,
+  getEmailVaultAddress,
+  getUsdcAddress,
+} from '../lib/emailVault'
 import { publicClient, makeWalletClient } from '../lib/viemClients'
 import { getPrivyUserEmail } from '../lib/privyUser'
 import { sendDepositEmailNotification } from '../lib/notify'
 
 // ─── helpers ──────────────────────────────────────────────────────────────
-function fmt(wei: bigint) {
-  const n = parseFloat(formatEther(wei))
-  return n === 0 ? '0.0000' : n.toFixed(4)
+/**
+ * 把 micro-USDC (uint256, 6 decimals) 顯示為 $X.XX
+ */
+function fmtUsd(microUsdc: bigint): string {
+  const n = parseFloat(formatUnits(microUsdc, USDC_DECIMALS))
+  return n === 0 ? '0.00' : n.toFixed(2)
 }
 
 async function getExternalAccount(provider: any): Promise<`0x${string}` | undefined> {
@@ -61,9 +70,11 @@ function DepositModal({ open, email, emailHash, externalWallet, walletsReady, on
     if (!amount.trim()) { setStatus('Enter an amount.'); setIsError(true); return }
     if (!externalWallet) { setStatus('Connect a wallet first.'); setIsError(true); return }
 
-    let value: bigint
-    try { value = parseEther(amount as `${number}`) }
-    catch { setStatus('Invalid ETH amount.'); setIsError(true); return }
+    // USD 數字 → micro-USDC (6 decimals)
+    let amountWei: bigint
+    try { amountWei = parseUnits(amount as `${number}`, USDC_DECIMALS) }
+    catch { setStatus('Invalid USD amount.'); setIsError(true); return }
+    if (amountWei <= 0n) { setStatus('Amount must be greater than 0.'); setIsError(true); return }
 
     setLoading(true)
     try {
@@ -72,15 +83,28 @@ function DepositModal({ open, email, emailHash, externalWallet, walletsReady, on
       const account = await getExternalAccount(provider)
       await ensureBaseSepolia(provider, walletClient)
 
-      setStatus('Confirm in your wallet…')
+      const vault = getEmailVaultAddress()
+      const usdc = getUsdcAddress()
+
+      // 1. 檢查 USDC allowance；不足就先 approve
+      const allowance = (await (publicClient as any).readContract({
+        address: usdc, abi: USDC_ABI, functionName: 'allowance', args: [account, vault],
+      })) as bigint
+      if (allowance < amountWei) {
+        setStatus('Approving USD spending… (1/2)')
+        const approveHash = await (walletClient as any).writeContract({
+          chain: baseSepolia, address: usdc, abi: USDC_ABI, functionName: 'approve',
+          args: [vault, amountWei], account,
+        })
+        // 等 approve 上鏈才能進 deposit
+        await (publicClient as any).waitForTransactionReceipt({ hash: approveHash, timeout: 60_000 })
+      }
+
+      // 2. Deposit
+      setStatus('Depositing… (2/2)')
       const hash = await (walletClient as any).writeContract({
-        chain: baseSepolia,
-        address: getEmailVaultAddress(),
-        abi: EMAIL_VAULT_ABI,
-        functionName: 'deposit',
-        args: [emailHash as `0x${string}`],
-        value,
-        account,
+        chain: baseSepolia, address: vault, abi: EMAIL_VAULT_ABI, functionName: 'deposit',
+        args: [emailHash as `0x${string}`, amountWei], account,
       })
       setTxHash(hash)
       setSuccess(true)
@@ -99,7 +123,7 @@ function DepositModal({ open, email, emailHash, externalWallet, walletsReady, on
             <div className="modal-head">
               <div>
                 <h3>Deposit to your vault</h3>
-                <p>Send ETH from your wallet into your hashcash vault.</p>
+                <p>Move USD from your wallet into your hashcash vault.</p>
               </div>
               <button className="modal-close" onClick={handleClose}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
@@ -114,8 +138,8 @@ function DepositModal({ open, email, emailHash, externalWallet, walletsReady, on
                 <label className="field-label" htmlFor="deposit-amount">Amount</label>
                 <div className="input-wrap">
                   <input className="input with-suffix" id="deposit-amount" type="text" inputMode="decimal"
-                    placeholder="0.001" value={amount} onChange={e => setAmount(e.target.value)} />
-                  <span className="input-suffix">ETH</span>
+                    placeholder="10.00" value={amount} onChange={e => setAmount(e.target.value)} />
+                  <span className="input-suffix">USD</span>
                 </div>
               </div>
             </div>
@@ -123,10 +147,10 @@ function DepositModal({ open, email, emailHash, externalWallet, walletsReady, on
             <div className="modal-foot">
               <button className="btn btn-primary btn-block" onClick={onDeposit} disabled={loading || !walletsReady}>
                 {loading
-                  ? <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" className="spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> Confirming…</>
-                  : 'Deposit ETH'}
+                  ? <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" className="spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> {status || 'Working…'}</>
+                  : 'Deposit'}
               </button>
-              <div className="modal-fineprint">ETH will be locked in the vault under your email hash.</div>
+              <div className="modal-fineprint">Funds will be locked in the vault under your email.</div>
             </div>
           </>
         ) : (
@@ -140,7 +164,7 @@ function DepositModal({ open, email, emailHash, externalWallet, walletsReady, on
               <h3 className="success-title">Deposited!</h3>
               <p className="success-sub">Your vault balance will update shortly.</p>
               <div className="tx-summary">
-                <div className="row"><span className="k">Amount</span><span className="v"><b>{amount}</b> ETH</span></div>
+                <div className="row"><span className="k">Amount</span><span className="v"><b>${amount}</b> USD</span></div>
                 {txHash && (
                   <div className="row">
                     <span className="k">Transaction</span>
@@ -188,7 +212,7 @@ function SendModal({ open, fromEmailHash, balanceWei, onClose, onSuccess }: {
   function handleClose() { onClose(); setTimeout(reset, 250) }
 
   function fillMax() {
-    if (balanceWei !== null) setAmount(formatEther(balanceWei))
+    if (balanceWei !== null) setAmount(formatUnits(balanceWei, USDC_DECIMALS))
   }
 
   const { sendTransaction } = useSendTransaction()
@@ -196,10 +220,13 @@ function SendModal({ open, fromEmailHash, balanceWei, onClose, onSuccess }: {
   async function onSend() {
     setStatus(''); setIsError(false)
     if (!toEmail.trim() || !amount.trim()) { setStatus('Please fill in all fields.'); setIsError(true); return }
+    const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    if (!EMAIL_RE.test(toEmail.trim())) { setStatus('Recipient email looks invalid.'); setIsError(true); return }
 
     let amountWei: bigint
-    try { amountWei = parseEther(amount as `${number}`) }
-    catch { setStatus('Invalid ETH amount.'); setIsError(true); return }
+    try { amountWei = parseUnits(amount as `${number}`, USDC_DECIMALS) }
+    catch { setStatus('Invalid USD amount.'); setIsError(true); return }
+    if (amountWei <= 0n) { setStatus('Amount must be greater than 0.'); setIsError(true); return }
 
     if (balanceWei !== null && amountWei > balanceWei) {
       setStatus('Amount exceeds your vault balance.'); setIsError(true); return
@@ -246,7 +273,7 @@ function SendModal({ open, fromEmailHash, balanceWei, onClose, onSuccess }: {
           <>
             <div className="modal-head">
               <div>
-                <h3>Send ETH</h3>
+                <h3>Send</h3>
                 <p>Vault-to-vault transfer. No wallet pop-up — gas is sponsored.</p>
               </div>
               <button className="modal-close" onClick={handleClose}>
@@ -270,11 +297,11 @@ function SendModal({ open, fromEmailHash, balanceWei, onClose, onSuccess }: {
                 <label className="field-label" htmlFor="send-amount">Amount</label>
                 <div className="input-wrap">
                   <input className="input with-max" id="send-amount" type="text" inputMode="decimal"
-                    placeholder="0.001" value={amount} onChange={e => setAmount(e.target.value)} />
+                    placeholder="10.00" value={amount} onChange={e => setAmount(e.target.value)} />
                   <button className="input-max" onClick={fillMax}>Max</button>
                 </div>
                 {balanceWei !== null && (
-                  <div className="field-hint">Available: <b style={{ color: 'var(--ink)' }}>{fmt(balanceWei)} ETH</b></div>
+                  <div className="field-hint">Available: <b style={{ color: 'var(--ink)' }}>${fmtUsd(balanceWei)} USD</b></div>
                 )}
               </div>
             </div>
@@ -283,7 +310,7 @@ function SendModal({ open, fromEmailHash, balanceWei, onClose, onSuccess }: {
               <button className="btn btn-primary btn-block" onClick={onSend} disabled={loading}>
                 {loading
                   ? <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" className="spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> Sending…</>
-                  : 'Send ETH'}
+                  : 'Send'}
               </button>
               <div className="modal-fineprint">Funds move instantly between vaults. Recipient can claim anytime.</div>
             </div>
@@ -303,7 +330,7 @@ function SendModal({ open, fromEmailHash, balanceWei, onClose, onSuccess }: {
               <div className="tx-summary">
                 <div className="row">
                   <span className="k">Amount</span>
-                  <span className="v"><b>{amount}</b> ETH</span>
+                  <span className="v"><b>${amount}</b> USD</span>
                 </div>
                 <div className="row">
                   <span className="k">Recipient</span>
@@ -349,7 +376,7 @@ function ClaimModal({ open, email, emailHash, walletAddress, balanceWei, externa
   function handleClose() { onClose(); setTimeout(() => { setAmount(''); setStatus(''); setIsError(false); setLoading(false) }, 250) }
 
   function fillMax() {
-    if (balanceWei !== null) setAmount(formatEther(balanceWei))
+    if (balanceWei !== null) setAmount(formatUnits(balanceWei, USDC_DECIMALS))
   }
 
   async function onClaim() {
@@ -358,8 +385,9 @@ function ClaimModal({ open, email, emailHash, walletAddress, balanceWei, externa
     if (!externalWallet) { setStatus('Connect MetaMask first.'); setIsError(true); return }
 
     let amountWei: bigint
-    try { amountWei = parseEther(amount as `${number}`) }
-    catch { setStatus('Invalid ETH amount.'); setIsError(true); return }
+    try { amountWei = parseUnits(amount as `${number}`, USDC_DECIMALS) }
+    catch { setStatus('Invalid USD amount.'); setIsError(true); return }
+    if (amountWei <= 0n) { setStatus('Amount must be greater than 0.'); setIsError(true); return }
 
     setLoading(true)
     try {
@@ -386,7 +414,7 @@ function ClaimModal({ open, email, emailHash, walletAddress, balanceWei, externa
     } finally { setLoading(false) }
   }
 
-  const available = balanceWei !== null ? `${fmt(balanceWei)} ETH` : '—'
+  const available = balanceWei !== null ? `$${fmtUsd(balanceWei)} USD` : '—'
 
   return (
     <div className={`modal-backdrop${open ? ' open' : ''}`} onClick={e => { if (e.target === e.currentTarget) handleClose() }}>
@@ -426,7 +454,7 @@ function ClaimModal({ open, email, emailHash, walletAddress, balanceWei, externa
           <button className="btn btn-primary btn-block" onClick={onClaim} disabled={loading || !walletsReady}>
             {loading
               ? <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" className="spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> Confirming…</>
-              : 'Claim ETH'}
+              : 'Claim'}
           </button>
           <div className="modal-fineprint">Gas is paid from your connected wallet on Base Sepolia.</div>
         </div>
@@ -473,7 +501,7 @@ export function Dashboard() {
 
   useEffect(() => { fetchBalance() }, [fetchBalance])
 
-  const displayBalance = balanceWei !== null ? fmt(balanceWei) : '—'
+  const displayBalance = balanceWei !== null ? fmtUsd(balanceWei) : '—'
   const firstName = email ? email.split('@')[0] : ''
   const vaultAddr = getEmailVaultAddress()
 
@@ -536,14 +564,13 @@ export function Dashboard() {
           )}
 
           <div className="balance-card">
-            <div className="balance-label label-eyebrow">Your Vault Balance</div>
+            <div className="balance-label label-eyebrow">Your USD Balance</div>
             <div className="balance-amount">
+              {balanceWei !== null && <span className="unit" style={{ marginRight: 4 }}>$</span>}
               <span className="num h-balance">{displayBalance}</span>
-              {balanceWei !== null && <span className="unit">ETH</span>}
+              {balanceWei !== null && <span className="unit">USD</span>}
             </div>
-            <div className="balance-usd">
-              {balanceWei !== null ? `≈ $${(parseFloat(formatEther(balanceWei)) * 3500).toFixed(2)} USD` : ' '}
-            </div>
+            <div className="balance-usd">{balanceWei !== null ? "on hashcash" : " "}</div>
 
             <div className="badge-row">
               <span className="badge network">

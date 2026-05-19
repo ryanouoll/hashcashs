@@ -92,10 +92,9 @@ export function LandingPage() {
                 <div className="env-to">To</div>
                 <div className="env-email">alex@gmail.com</div>
                 <div className="env-amount">
-                  <span className="num">0.025</span>
-                  <span className="unit">ETH</span>
+                  <span className="num">$50.00</span>
+                  <span className="unit">USD</span>
                 </div>
-                <div className="env-usd">≈ $87.50 USD</div>
               </div>
             </div>
 
@@ -115,22 +114,15 @@ export function LandingPage() {
                 <div className="env-to">From</div>
                 <div className="env-email">ryan@gmail.com</div>
                 <div className="env-amount">
-                  <span className="num">0.025</span>
-                  <span className="unit">ETH</span>
+                  <span className="num">$50.00</span>
+                  <span className="unit">USD</span>
                 </div>
                 <div className="env-status"><span className="dot" />Confirmed · 12s</div>
               </div>
             </div>
 
-            <div className="eth-coin">
-              <svg viewBox="0 0 256 417" xmlns="http://www.w3.org/2000/svg">
-                <path fill="#fff" d="M127.961 0l-2.795 9.5v275.668l2.795 2.79 127.962-75.638z"/>
-                <path fill="#fff" fillOpacity="0.7" d="M127.962 0L0 212.32l127.962 75.639V154.158z"/>
-                <path fill="#fff" d="M127.961 312.187l-1.575 1.92v98.199l1.575 4.6L256 236.587z"/>
-                <path fill="#fff" fillOpacity="0.7" d="M127.962 416.905v-104.72L0 236.585z"/>
-                <path fill="#fff" fillOpacity="0.5" d="M127.961 287.958l127.96-75.637L127.961 154.16z"/>
-                <path fill="#fff" fillOpacity="0.9" d="M0 212.32l127.96 75.638v-133.8z"/>
-              </svg>
+            <div className="usd-coin" aria-hidden="true">
+              <span>$</span>
             </div>
           </div>
         </div>
