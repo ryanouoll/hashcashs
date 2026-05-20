@@ -81,6 +81,8 @@ The friction points that blocked email-as-wallet ten years ago are gone. The mar
 3. Open the live demo and sign in with Google
 4. Deposit, send, claim — full flow takes ~2 minutes
 
+> ℹ️ **Notification emails may land in spam.** The sender domain (`cfoing.io`) is new and still building sender reputation with Gmail. If you sent a payment to a friend and they didn't see it, ask them to check their spam folder and mark the email as "Not spam". This will resolve organically over the next 2 weeks.
+
 ---
 
 ## Tech stack
@@ -101,13 +103,14 @@ The friction points that blocked email-as-wallet ten years ago are gone. The mar
 
 ## Known limitations (and why they exist)
 
-This is a **demo / testnet product**. Three intentional simplifications:
+This is a **demo / testnet product**. Four known limitations:
 
 1. **No on-chain ownership verification.** Currently anyone who knows an email's `keccak256` hash can claim its balance. This is solvable with a backend oracle that verifies Google OAuth and signs EIP-712 tickets, or with on-chain ZK-Email proofs. We chose to ship without it first to validate the UX hypothesis.
 2. **Gmail dot/plus aliases not normalized.** `r.yan@gmail.com` and `ryan@gmail.com` produce different hashes even though Gmail routes them to the same inbox. Avoiding provider-specific rules until needed.
 3. **Per-vault caps not enforced.** A production deployment with real funds would cap each emailHash at a small amount until ownership is proven.
+4. **Notification email deliverability is still warming up.** The sender domain is new, so Gmail / Yahoo / Outlook will often route the first few emails to spam until reputation builds (typically 1-2 weeks of consistent sending). Notification copy already avoids crypto-trigger words (`wallet`, `claim`, `USDC`, etc.) to minimize this, and we set `List-Unsubscribe` and `Reply-To` headers per Gmail's 2024 bulk-sender requirements.
 
-These are tracked in `contracts/EmailVaultUSDC.sol` as comments and in the test suite (`test/EmailVaultUSDC.test.js`) as named tests — so any change that fixes them will trip the tests and force an explicit acknowledgment.
+The first three are tracked in `contracts/EmailVaultUSDC.sol` as comments and in the test suite (`test/EmailVaultUSDC.test.js`) as named tests — so any change that fixes them will trip the tests and force an explicit acknowledgment.
 
 ---
 
