@@ -225,9 +225,10 @@ function DepositModal({ open, email, emailHash, externalWallet, walletsReady, on
 
 // ─── SendModal ─────────────────────────────────────────────────────────────
 // Uses Privy useSendTransaction with sponsor:true + showWalletUIs:false → zero popup, gas sponsored
-function SendModal({ open, fromEmailHash, balanceWei, onClose, onSuccess }: {
+function SendModal({ open, fromEmailHash, fromEmail, balanceWei, onClose, onSuccess }: {
   open: boolean
   fromEmailHash: string
+  fromEmail: string
   balanceWei: bigint | null
   onClose: () => void
   onSuccess: () => void
@@ -295,7 +296,12 @@ function SendModal({ open, fromEmailHash, balanceWei, onClose, onSuccess }: {
       const hash = (result as any)?.hash || (result as any)?.transactionHash || String(result)
 
       setTxHash(hash)
-      void sendDepositEmailNotification({ toEmail: toEmail.trim(), amountEth: amount.trim(), txHash: hash })
+      void sendDepositEmailNotification({
+        toEmail: toEmail.trim(),
+        amountEth: amount.trim(),  // 內容當 USD 處理（後端會解讀為金額）
+        txHash: hash,
+        fromEmail: fromEmail || undefined,
+      })
       setSuccess(true)
       onSuccess()
     } catch (e: any) {
@@ -678,6 +684,7 @@ export function Dashboard() {
       <SendModal
         open={sendOpen}
         fromEmailHash={emailHash}
+        fromEmail={email || ''}
         balanceWei={balanceWei}
         onClose={() => setSendOpen(false)}
         onSuccess={() => { setSendOpen(false); fetchBalance() }}
