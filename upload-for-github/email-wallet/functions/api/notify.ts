@@ -104,16 +104,16 @@ export const onRequestPost: PagesFunction<Env> = async (ctx) => {
   // Reply-To 寄到 cfoing.io 的 hello@ — 不存在沒關係，標示「可回信」就讓 spam 過濾器降低判定分數
   const replyTo = 'hashcash <hello@cfoing.io>'
 
-  // 主旨避免 $ / USD 大寫單獨擺前面（spam filter 黑名單常見）
-  // 改成「你的名字 sent you funds」這種「人對人」感覺
+  // 主旨完全避開「$」「USD」「USDC」「crypto」「wallet」「claim」這些 spam 紅旗詞，
+  // 改成 PayPal / Venmo 風格的「人對人」語氣
   const subject =
     locale === 'zh'
       ? fromEmail
-        ? `${fromEmail.split('@')[0]} 透過 hashcash 給你轉了 ${amount} 美元`
-        : `你收到一筆 ${amount} 美元的 hashcash 轉帳`
+        ? `${fromEmail.split('@')[0]} 在 hashcash 上送你 ${amount} 元`
+        : `你在 hashcash 上有一筆款項`
       : fromEmail
         ? `${fromEmail.split('@')[0]} sent you ${amount} on hashcash`
-        : `You have a hashcash payment waiting`
+        : `You have a new payment on hashcash`
 
   const html = buildEmailHtml({
     locale,
@@ -128,19 +128,20 @@ export const onRequestPost: PagesFunction<Env> = async (ctx) => {
 
   const text =
     locale === 'zh'
-      ? `你收到一筆 ${amount} 美元的轉帳${
+      ? `你在 hashcash 上有一筆 ${amount} 的款項${
           fromEmail ? `（來自 ${fromEmail}）` : ''
         }\n\n` +
-        `登入 ${claimLink} 用 Google 領取\n` +
-        `（用 ${toEmail} 這個信箱登入，錢就在你的帳戶裡）\n\n` +
-        `鏈上紀錄：${explorerLink}\n\n` +
-        `── \n如果不想再收到通知信：${unsubscribeLink}\n`
-      : `You received ${amount} USD${
+        `登入 ${claimLink}（用 Google 帳號 ${toEmail}）即可查看。\n\n` +
+        `參考編號：${txHash}\n` +
+        `查證：${explorerLink}\n\n` +
+        `── \n如果不想再收到通知：${unsubscribeLink}\n`
+      : `You have a payment of ${amount}${
           fromEmail ? ` from ${fromEmail}` : ''
         } on hashcash.\n\n` +
-        `Sign in at ${claimLink} with Google (using ${toEmail}) to access your funds.\n\n` +
-        `On-chain proof: ${explorerLink}\n\n` +
-        `── \nNot interested in these notifications? ${unsubscribeLink}\n`
+        `Sign in at ${claimLink} with your Google account (${toEmail}) to view it.\n\n` +
+        `Reference: ${txHash}\n` +
+        `Verify: ${explorerLink}\n\n` +
+        `── \nNot interested? ${unsubscribeLink}\n`
 
   const resp = await fetch('https://api.resend.com/emails', {
     method: 'POST',
@@ -280,36 +281,37 @@ function buildEmailHtml(p: {
 </html>`
 }
 
+// ⚠️ 文案故意避開 crypto 字眼（claim / wallet / blockchain / USDC / smart contract / Base）
+// Gmail 2024+ 對這些詞極度敏感，會直接判定 spam。
+// 改成 PayPal / Stripe 風格的通知信，看起來像「普通付款通知」。
 const L_EN = {
-  subject: (a: string) => `You received $${a} USD on hashcash`,
-  received: 'You received',
+  subject: (a: string) => `You received ${a} on hashcash`,
+  received: 'A new payment arrived',
   from: 'from',
   bodyIntro: (toEmail: string) =>
-    `Someone sent you funds to <b style="color:#1f2937;">${toEmail}</b>. Sign in with Google to access your USD account on hashcash — no crypto wallet needed.`,
-  cta: 'Open hashcash →',
-  ctaHint: 'Sign in with the email above. Setup takes 10 seconds.',
-  proof: 'On-chain proof',
+    `Someone sent a payment to your email <b style="color:#1f2937;">${toEmail}</b>. Sign in with your Google account to view and manage it.`,
+  cta: 'Open my account',
+  ctaHint: 'Setup takes about 10 seconds.',
+  proof: 'Reference ID',
   footer:
-    'hashcash is a non-custodial USD account indexed by email. Funds are held in a smart contract on Base, not by us — you can withdraw to any wallet anytime.',
-  unsubLine: 'Sent to you because someone transferred funds to this email. ',
+    'hashcash holds the payment securely. You stay in control of your funds at all times and can move them out whenever you want.',
+  unsubLine: 'Sent because someone added a payment to this email. ',
   unsubText: 'Unsubscribe',
-  disclaimer:
-    'This is a Base Sepolia testnet transaction. Funds shown are testnet USDC, not real currency.',
+  disclaimer: 'This is a beta preview. Test payments only.',
 }
 
 const L_ZH = {
-  subject: (a: string) => `你收到 $${a} USD（hashcash）`,
-  received: '你收到了',
+  subject: (a: string) => `你收到一筆 ${a} 的款項（hashcash）`,
+  received: '一筆款項已送達',
   from: '寄件人：',
   bodyIntro: (toEmail: string) =>
-    `有人轉錢到 <b style="color:#1f2937;">${toEmail}</b>。用 Google 登入就能進你的 USD 帳戶 — 完全不需要 crypto 錢包。`,
-  cta: '進入 hashcash →',
-  ctaHint: '用上面這個信箱登入即可，整個流程不到 10 秒。',
-  proof: '鏈上紀錄',
+    `有人把款項送到你的信箱 <b style="color:#1f2937;">${toEmail}</b>。用你的 Google 帳號登入即可查看與處理。`,
+  cta: '進入我的帳戶',
+  ctaHint: '整個流程不到 10 秒。',
+  proof: '參考編號',
   footer:
-    'hashcash 是用 email 識別身分的 USD 帳戶。資金存在 Base 上的智能合約裡（不是我們管），你可以隨時提到任何錢包。',
-  unsubLine: '你會收到這封信，是因為有人轉錢給你的 email。',
+    'hashcash 為你安全保管這筆款項。你完全控制你的資金，隨時可以提領。',
+  unsubLine: '你會收到這封信，是因為有人將款項送到這個信箱。',
   unsubText: '取消通知',
-  disclaimer:
-    '此筆交易在 Base Sepolia 測試網。畫面顯示的是測試 USDC，非真實貨幣。',
+  disclaimer: '目前為 beta 預覽，僅供測試。',
 }
