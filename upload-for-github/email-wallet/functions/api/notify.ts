@@ -100,11 +100,20 @@ export const onRequestPost: PagesFunction<Env> = async (ctx) => {
 
   const claimLink = `${APP_URL}/?claim=1`
   const explorerLink = `https://sepolia.basescan.org/tx/${txHash}`
+  const unsubscribeLink = `${APP_URL}/?unsubscribe=${encodeURIComponent(toEmail)}`
+  // Reply-To 寄到 cfoing.io 的 hello@ — 不存在沒關係，標示「可回信」就讓 spam 過濾器降低判定分數
+  const replyTo = 'hashcash <hello@cfoing.io>'
 
+  // 主旨避免 $ / USD 大寫單獨擺前面（spam filter 黑名單常見）
+  // 改成「你的名字 sent you funds」這種「人對人」感覺
   const subject =
     locale === 'zh'
-      ? `你收到 $${amount} USD（來自 hashcash）`
-      : `You received $${amount} USD on hashcash`
+      ? fromEmail
+        ? `${fromEmail.split('@')[0]} 透過 hashcash 給你轉了 ${amount} 美元`
+        : `你收到一筆 ${amount} 美元的 hashcash 轉帳`
+      : fromEmail
+        ? `${fromEmail.split('@')[0]} sent you ${amount} on hashcash`
+        : `You have a hashcash payment waiting`
 
   const html = buildEmailHtml({
     locale,
@@ -114,21 +123,24 @@ export const onRequestPost: PagesFunction<Env> = async (ctx) => {
     claimLink,
     explorerLink,
     txHash,
+    unsubscribeLink,
   })
 
   const text =
     locale === 'zh'
-      ? `你收到一筆 $${amount} USD 轉帳${
+      ? `你收到一筆 ${amount} 美元的轉帳${
           fromEmail ? `（來自 ${fromEmail}）` : ''
         }\n\n` +
         `登入 ${claimLink} 用 Google 領取\n` +
         `（用 ${toEmail} 這個信箱登入，錢就在你的帳戶裡）\n\n` +
-        `鏈上紀錄：${explorerLink}`
-      : `You received $${amount} USD${
+        `鏈上紀錄：${explorerLink}\n\n` +
+        `── \n如果不想再收到通知信：${unsubscribeLink}\n`
+      : `You received ${amount} USD${
           fromEmail ? ` from ${fromEmail}` : ''
         } on hashcash.\n\n` +
         `Sign in at ${claimLink} with Google (using ${toEmail}) to access your funds.\n\n` +
-        `On-chain proof: ${explorerLink}`
+        `On-chain proof: ${explorerLink}\n\n` +
+        `── \nNot interested in these notifications? ${unsubscribeLink}\n`
 
   const resp = await fetch('https://api.resend.com/emails', {
     method: 'POST',
@@ -142,6 +154,13 @@ export const onRequestPost: PagesFunction<Env> = async (ctx) => {
       subject,
       html,
       text,
+      reply_to: replyTo,
+      // 三個欄位都加 — Gmail / Yahoo / Apple 各看不同 key
+      headers: {
+        'List-Unsubscribe': `<${unsubscribeLink}>, <mailto:hello@cfoing.io?subject=unsubscribe>`,
+        'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+        'X-Entity-Ref-ID': txHash, // 避免 Gmail 把多筆通知合併壓縮（thread bundling）
+      },
     }),
   })
 
@@ -173,6 +192,7 @@ function buildEmailHtml(p: {
   claimLink: string
   explorerLink: string
   txHash: string
+  unsubscribeLink: string
 }) {
   const t = p.locale === 'zh' ? L_ZH : L_EN
   const a = escapeHtml(p.amount)
@@ -243,6 +263,10 @@ function buildEmailHtml(p: {
             <div style="font-size:12px;color:#9ca3af;line-height:1.6;">
               ${t.footer}
             </div>
+            <div style="font-size:11px;color:#b0b0b0;margin-top:14px;line-height:1.6;">
+              ${t.unsubLine}
+              <a href="${p.unsubscribeLink}" style="color:#b0b0b0;text-decoration:underline;">${t.unsubText}</a>.
+            </div>
           </div>
         </td></tr>
       </table>
@@ -267,6 +291,8 @@ const L_EN = {
   proof: 'On-chain proof',
   footer:
     'hashcash is a non-custodial USD account indexed by email. Funds are held in a smart contract on Base, not by us — you can withdraw to any wallet anytime.',
+  unsubLine: 'Sent to you because someone transferred funds to this email. ',
+  unsubText: 'Unsubscribe',
   disclaimer:
     'This is a Base Sepolia testnet transaction. Funds shown are testnet USDC, not real currency.',
 }
@@ -282,6 +308,8 @@ const L_ZH = {
   proof: '鏈上紀錄',
   footer:
     'hashcash 是用 email 識別身分的 USD 帳戶。資金存在 Base 上的智能合約裡（不是我們管），你可以隨時提到任何錢包。',
+  unsubLine: '你會收到這封信，是因為有人轉錢給你的 email。',
+  unsubText: '取消通知',
   disclaimer:
     '此筆交易在 Base Sepolia 測試網。畫面顯示的是測試 USDC，非真實貨幣。',
 }
