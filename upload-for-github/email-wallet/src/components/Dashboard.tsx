@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { usePrivy, useWallets, useSendTransaction } from '@privy-io/react-auth'
-import { formatUnits, parseUnits, encodeFunctionData } from 'viem'
+import { formatUnits, parseUnits, encodeFunctionData, parseAbiItem, parseEventLogs } from 'viem'
 import { baseSepolia } from 'viem/chains'
 import { hashEmail } from '../lib/email'
 import {
@@ -21,6 +21,85 @@ import { sendDepositEmailNotification } from '../lib/notify'
 function fmtUsd(microUsdc: bigint): string {
   const n = parseFloat(formatUnits(microUsdc, USDC_DECIMALS))
   return n === 0 ? '0.00' : n.toFixed(2)
+}
+
+// ─── 交易紀錄（直接讀鏈上 event，無 subgraph）─────────────────────────────
+const VAULT_DEPLOY_BLOCK = 41726470n // EmailVaultUSDC 部署的 block，限縮 getLogs 起點
+const LOG_CHUNK = 49000n // publicnode getLogs 上限 50000，留安全邊際
+
+const VAULT_EVENTS = [
+  parseAbiItem('event Deposited(bytes32 indexed emailHash, address indexed sender, uint256 amount)'),
+  parseAbiItem('event Claimed(bytes32 indexed emailHash, address indexed receiver, uint256 amount)'),
+  parseAbiItem('event Transferred(bytes32 indexed fromHash, bytes32 indexed toHash, address indexed caller, uint256 amount)'),
+] as const
+
+type Activity = {
+  kind: 'deposit' | 'claim' | 'send' | 'receive'
+  amount: bigint
+  blockNumber: bigint
+  txHash: string
+  counterpartyHash?: string
+  tsApprox: number // 估算的 unix 秒（用 block 號推算，Base ~2s/block）
+}
+
+const ACTIVITY_LABEL: Record<Activity['kind'], string> = {
+  deposit: 'Deposited from wallet',
+  claim: 'Withdrawn to wallet',
+  send: 'Sent',
+  receive: 'Received',
+}
+
+function relTime(secAgo: number): string {
+  if (secAgo < 60) return 'just now'
+  if (secAgo < 3600) return `${Math.floor(secAgo / 60)}m ago`
+  if (secAgo < 86400) return `${Math.floor(secAgo / 3600)}h ago`
+  return `${Math.floor(secAgo / 86400)}d ago`
+}
+
+/**
+ * 讀取某 emailHash 相關的所有 vault 活動。
+ * 因為公開 RPC 限制 getLogs 每次最多 50000 blocks，分 chunk 查，
+ * 然後在前端解碼 + 過濾出跟這個 hash 有關的事件。
+ */
+async function fetchVaultActivity(emailHash: `0x${string}`): Promise<Activity[]> {
+  const vault = getEmailVaultAddress()
+  const latest = (await (publicClient as any).getBlockNumber()) as bigint
+
+  // 收集所有 chunk 的 raw logs
+  const rawLogs: any[] = []
+  for (let from = VAULT_DEPLOY_BLOCK; from <= latest; from += LOG_CHUNK + 1n) {
+    const to = from + LOG_CHUNK > latest ? latest : from + LOG_CHUNK
+    try {
+      const chunk = await (publicClient as any).getLogs({ address: vault, fromBlock: from, toBlock: to })
+      rawLogs.push(...chunk)
+    } catch (e) {
+      console.warn('[activity] getLogs chunk failed', from, to, e)
+    }
+  }
+
+  // 解碼
+  const decoded = parseEventLogs({ abi: VAULT_EVENTS as any, logs: rawLogs })
+
+  const nowSec = Math.floor(Date.now() / 1000)
+  const tsOf = (bn: bigint) => nowSec - Number(latest - bn) * 2 // Base ~2s/block
+
+  const out: Activity[] = []
+  for (const log of decoded as any[]) {
+    const a = log.args
+    const base = { amount: a.amount, blockNumber: log.blockNumber, txHash: log.transactionHash, tsApprox: tsOf(log.blockNumber) }
+    if (log.eventName === 'Deposited' && a.emailHash === emailHash) {
+      out.push({ kind: 'deposit', ...base })
+    } else if (log.eventName === 'Claimed' && a.emailHash === emailHash) {
+      out.push({ kind: 'claim', ...base })
+    } else if (log.eventName === 'Transferred' && a.fromHash === emailHash) {
+      out.push({ kind: 'send', ...base, counterpartyHash: a.toHash })
+    } else if (log.eventName === 'Transferred' && a.toHash === emailHash) {
+      out.push({ kind: 'receive', ...base, counterpartyHash: a.fromHash })
+    }
+  }
+
+  out.sort((x, y) => (y.blockNumber > x.blockNumber ? 1 : y.blockNumber < x.blockNumber ? -1 : 0))
+  return out.slice(0, 15) // 只顯示最近 15 筆
 }
 
 async function getExternalAccount(provider: any): Promise<`0x${string}` | undefined> {
@@ -528,6 +607,9 @@ export function Dashboard() {
   const [sendOpen, setSendOpen] = useState(false)
   const [claimOpen, setClaimOpen] = useState(false)
   const [walletMenuOpen, setWalletMenuOpen] = useState(false)
+  const [activity, setActivity] = useState<Activity[] | null>(null)
+  const [activityLoading, setActivityLoading] = useState(false)
+  const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000))
 
   const fetchBalance = useCallback(async () => {
     if (!emailHash) return
@@ -543,7 +625,21 @@ export function Dashboard() {
     } catch (e) { console.error(e) }
   }, [emailHash])
 
+  const fetchActivity = useCallback(async () => {
+    if (!emailHash) return
+    setActivityLoading(true)
+    try {
+      const list = await fetchVaultActivity(emailHash as `0x${string}`)
+      setActivity(list)
+      setNowSec(Math.floor(Date.now() / 1000))
+    } catch (e) {
+      console.error('[activity]', e)
+      setActivity([])
+    } finally { setActivityLoading(false) }
+  }, [emailHash])
+
   useEffect(() => { fetchBalance() }, [fetchBalance])
+  useEffect(() => { fetchActivity() }, [fetchActivity])
 
   const displayBalance = balanceWei !== null ? fmtUsd(balanceWei) : '—'
   const firstName = email ? email.split('@')[0] : ''
@@ -648,17 +744,46 @@ export function Dashboard() {
             </div>
           </div>
 
-          {/* Recent activity placeholder */}
+          {/* Recent activity — read straight from on-chain events */}
           <div className="recent">
             <div className="recent-head">
               <span className="label-eyebrow">Recent activity</span>
-              <button className="btn btn-ghost" style={{ height: 28, padding: '0 10px', fontSize: 12 }} onClick={fetchBalance}>
-                Refresh ↻
+              <button className="btn btn-ghost" style={{ height: 28, padding: '0 10px', fontSize: 12 }}
+                onClick={() => { fetchBalance(); fetchActivity() }} disabled={activityLoading}>
+                {activityLoading ? 'Loading…' : 'Refresh ↻'}
               </button>
             </div>
-            <div style={{ padding: '16px 14px', textAlign: 'center', color: 'var(--mute)', fontSize: 13 }}>
-              No transaction history — connect a subgraph to see past activity.
-            </div>
+            {activity === null || activityLoading ? (
+              <div style={{ padding: '16px 14px', textAlign: 'center', color: 'var(--mute)', fontSize: 13 }}>
+                Loading activity…
+              </div>
+            ) : activity.length === 0 ? (
+              <div style={{ padding: '16px 14px', textAlign: 'center', color: 'var(--mute)', fontSize: 13 }}>
+                No activity yet. Deposit or receive a payment to get started.
+              </div>
+            ) : (
+              <div className="activity-list">
+                {activity.map((a) => (
+                  <a key={a.txHash + a.kind} className="activity-row"
+                    href={`https://sepolia.basescan.org/tx/${a.txHash}`} target="_blank" rel="noreferrer">
+                    <span className={`activity-icon ${a.kind === 'deposit' || a.kind === 'receive' ? 'in' : 'out'}`}>
+                      {a.kind === 'deposit' || a.kind === 'receive' ? '↓' : '↑'}
+                    </span>
+                    <span className="activity-main">
+                      <span className="activity-title">{ACTIVITY_LABEL[a.kind]}</span>
+                      <span className="activity-sub">
+                        {a.counterpartyHash
+                          ? `${a.counterpartyHash.slice(0, 8)}…${a.counterpartyHash.slice(-4)} · ${relTime(nowSec - a.tsApprox)}`
+                          : relTime(nowSec - a.tsApprox)}
+                      </span>
+                    </span>
+                    <span className={`activity-amount ${a.kind === 'deposit' || a.kind === 'receive' ? 'in' : 'out'}`}>
+                      {a.kind === 'deposit' || a.kind === 'receive' ? '+' : '−'}${fmtUsd(a.amount)}
+                    </span>
+                  </a>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="dash-foot">
@@ -679,7 +804,7 @@ export function Dashboard() {
         externalWallet={externalWallet}
         walletsReady={walletsReady}
         onClose={() => setDepositOpen(false)}
-        onSuccess={() => { setDepositOpen(false); fetchBalance() }}
+        onSuccess={() => { setDepositOpen(false); fetchBalance(); fetchActivity() }}
       />
       <SendModal
         open={sendOpen}
@@ -687,7 +812,7 @@ export function Dashboard() {
         fromEmail={email || ''}
         balanceWei={balanceWei}
         onClose={() => setSendOpen(false)}
-        onSuccess={() => { setSendOpen(false); fetchBalance() }}
+        onSuccess={() => { setSendOpen(false); fetchBalance(); fetchActivity() }}
       />
       <ClaimModal
         open={claimOpen}
@@ -698,7 +823,7 @@ export function Dashboard() {
         externalWallet={externalWallet}
         walletsReady={walletsReady}
         onClose={() => setClaimOpen(false)}
-        onSuccess={() => { setClaimOpen(false); fetchBalance() }}
+        onSuccess={() => { setClaimOpen(false); fetchBalance(); fetchActivity() }}
       />
     </>
   )
