@@ -1,20 +1,25 @@
 /**
  * Cloudflare Pages Function: GET /api/activity?hash=0x<emailHash>
  *
- * 走 Basescan API v2（server-side，用 BASESCAN_API_KEY）讀合約 event log，
- * 解析成這個 emailHash 的交易紀錄。比前端直接打公開 RPC 可靠很多：
- *   - 有 API key，不會被 rate limit
- *   - Basescan 不限 block range
- *   - 一個請求搞定（前端不用 chunk）
- *
- * env: BASESCAN_API_KEY（可選，沒有也能跑但 rate limit 較嚴）
+ * 伺服器端分段查 Base Sepolia RPC 的 event log，解析成這個 emailHash 的交易紀錄。
+ * 完全不依賴任何 API key（避開 Cloudflare build-vs-runtime env 的坑）：
+ *   - 伺服器端發 eth_getLogs，沒有瀏覽器 CORS / 限流問題
+ *   - 公開 RPC 限制每次 50000 blocks，所以分 chunk 查
+ *   - 一個 endpoint，前端只要一個 fetch
  */
 
-type Env = { BASESCAN_API_KEY?: string }
+type Env = Record<string, never>
 
 const VAULT = '0xE856d828bD4DB6123b5d6C6C7405432eC722dA17'
 const DEPLOY_BLOCK = 41726470
-const CHAIN_ID = 84532
+const CHUNK = 49000
+
+// 多個 RPC fallback（依序試，第一個成功就用）
+const RPCS = [
+  'https://base-sepolia-rpc.publicnode.com',
+  'https://base-sepolia.gateway.tenderly.co',
+  'https://sepolia.base.org',
+]
 
 // event topic0（keccak256 of signature）
 const TOPIC = {
@@ -30,16 +35,39 @@ function json(status: number, data: unknown, extra?: HeadersInit) {
   })
 }
 
-// bytes32 topic 正規化：補滿 66 字元、轉小寫
 function norm32(h: string): string {
   let s = (h || '').toLowerCase()
   if (!s.startsWith('0x')) s = '0x' + s
   return s
 }
 
-// 解 hex → bigint
 function hexToBig(h: string): bigint {
   return BigInt(h && h !== '0x' ? h : '0x0')
+}
+
+// 對某個 RPC 發 JSON-RPC
+async function rpc(url: string, method: string, params: any[]): Promise<any> {
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+  })
+  const j: any = await r.json()
+  if (j.error) throw new Error(j.error.message || 'rpc error')
+  return j.result
+}
+
+// 在 fallback RPC 清單上試，第一個成功就回
+async function rpcWithFallback(method: string, params: any[]): Promise<any> {
+  let lastErr: any
+  for (const url of RPCS) {
+    try {
+      return await rpc(url, method, params)
+    } catch (e) {
+      lastErr = e
+    }
+  }
+  throw lastErr
 }
 
 export const onRequestGet: PagesFunction<Env> = async (ctx) => {
@@ -49,73 +77,65 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
     return json(400, { ok: false, error: 'invalid hash' })
   }
 
-  const key = ctx.env.BASESCAN_API_KEY || ''
-  // 診斷：如果 runtime 拿不到 key，明確回報（而不是讓 Etherscan 回模糊錯誤）
-  if (!key) {
-    return json(500, {
-      ok: false,
-      error: 'BASESCAN_API_KEY not available to function at runtime',
-      hint: 'Set it in Cloudflare Pages → Settings → Environment variables (Production), then trigger a NEW deployment (push a commit, not just Retry).',
-    })
-  }
-  const base = `https://api.etherscan.io/v2/api?chainid=${CHAIN_ID}&module=logs&action=getLogs&address=${VAULT}&fromBlock=${DEPLOY_BLOCK}&toBlock=latest`
-
-  // 一次抓合約全部 log（demo 量小，1000 筆內），server 端 filter
-  const apiUrl = `${base}${key ? `&apikey=${key}` : ''}`
-
-  let logs: any[]
+  // 1. 取得最新 block
+  let latest: number
   try {
-    const r = await fetch(apiUrl)
-    const j: any = await r.json()
-    if (j.status !== '1' && j.message !== 'No records found') {
-      return json(502, { ok: false, error: 'basescan_error', details: j.result || j.message })
-    }
-    logs = Array.isArray(j.result) ? j.result : []
+    latest = Number(hexToBig(await rpcWithFallback('eth_blockNumber', [])))
   } catch (e: any) {
-    return json(502, { ok: false, error: 'fetch_failed', details: String(e?.message || e) })
+    return json(502, { ok: false, error: 'block_number_failed', details: String(e?.message || e) })
   }
+
+  // 2. 分段抓所有合約 log
+  const rawLogs: any[] = []
+  for (let from = DEPLOY_BLOCK; from <= latest; from += CHUNK + 1) {
+    const to = Math.min(from + CHUNK, latest)
+    try {
+      const chunk = await rpcWithFallback('eth_getLogs', [
+        { address: VAULT, fromBlock: '0x' + from.toString(16), toBlock: '0x' + to.toString(16) },
+      ])
+      if (Array.isArray(chunk)) rawLogs.push(...chunk)
+    } catch {
+      // 單一 chunk 失敗就略過，不讓整個 endpoint 掛掉
+    }
+  }
+
+  const nowSec = Math.floor(Date.now() / 1000)
+  const tsOf = (bnHex: string) => nowSec - (latest - Number(hexToBig(bnHex))) * 2 // Base ~2s/block
 
   type Item = {
     kind: 'deposit' | 'claim' | 'send' | 'receive'
-    amount: string // micro-USDC 字串
-    blockNumber: number
+    amount: string
     txHash: string
-    timeStamp: number // unix 秒（Basescan 直接給，不用估算）
+    timeStamp: number
     counterpartyHash?: string
   }
 
   const out: Item[] = []
-  for (const log of logs) {
+  for (const log of rawLogs) {
     const topic0 = (log.topics?.[0] || '').toLowerCase()
-    const blockNumber = parseInt(log.blockNumber, 16)
-    const timeStamp = parseInt(log.timeStamp, 16)
     const txHash = log.transactionHash
+    const timeStamp = tsOf(log.blockNumber)
+    const amount = hexToBig(log.data).toString()
 
-    if (topic0 === TOPIC.Deposited) {
-      const emailHash = norm32(log.topics[1])
-      if (emailHash === hash) {
-        out.push({ kind: 'deposit', amount: hexToBig(log.data).toString(), blockNumber, txHash, timeStamp })
-      }
-    } else if (topic0 === TOPIC.Claimed) {
-      const emailHash = norm32(log.topics[1])
-      if (emailHash === hash) {
-        out.push({ kind: 'claim', amount: hexToBig(log.data).toString(), blockNumber, txHash, timeStamp })
-      }
+    if (topic0 === TOPIC.Deposited && norm32(log.topics[1]) === hash) {
+      out.push({ kind: 'deposit', amount, txHash, timeStamp })
+    } else if (topic0 === TOPIC.Claimed && norm32(log.topics[1]) === hash) {
+      out.push({ kind: 'claim', amount, txHash, timeStamp })
     } else if (topic0 === TOPIC.Transferred) {
       const fromHash = norm32(log.topics[1])
       const toHash = norm32(log.topics[2])
       if (fromHash === hash) {
-        out.push({ kind: 'send', amount: hexToBig(log.data).toString(), blockNumber, txHash, timeStamp, counterpartyHash: toHash })
+        out.push({ kind: 'send', amount, txHash, timeStamp, counterpartyHash: toHash })
       } else if (toHash === hash) {
-        out.push({ kind: 'receive', amount: hexToBig(log.data).toString(), blockNumber, txHash, timeStamp, counterpartyHash: fromHash })
+        out.push({ kind: 'receive', amount, txHash, timeStamp, counterpartyHash: fromHash })
       }
     }
   }
 
-  out.sort((a, b) => b.blockNumber - a.blockNumber)
+  // 依 timeStamp 倒序（新到舊）
+  out.sort((a, b) => b.timeStamp - a.timeStamp)
 
   return json(200, { ok: true, activity: out.slice(0, 20) }, {
-    // 短快取，避免使用者連點 refresh 一直打 Basescan
     'cache-control': 'public, max-age=5',
   })
 }
