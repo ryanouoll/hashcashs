@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { usePrivy, useWallets, useSendTransaction } from '@privy-io/react-auth'
-import { formatUnits, parseUnits, encodeFunctionData, parseAbiItem, parseEventLogs } from 'viem'
+import { formatUnits, parseUnits, encodeFunctionData } from 'viem'
 import { baseSepolia } from 'viem/chains'
 import { hashEmail } from '../lib/email'
 import {
@@ -23,23 +23,13 @@ function fmtUsd(microUsdc: bigint): string {
   return n === 0 ? '0.00' : n.toFixed(2)
 }
 
-// ─── 交易紀錄（直接讀鏈上 event，無 subgraph）─────────────────────────────
-const VAULT_DEPLOY_BLOCK = 41726470n // EmailVaultUSDC 部署的 block，限縮 getLogs 起點
-const LOG_CHUNK = 49000n // publicnode getLogs 上限 50000，留安全邊際
-
-const VAULT_EVENTS = [
-  parseAbiItem('event Deposited(bytes32 indexed emailHash, address indexed sender, uint256 amount)'),
-  parseAbiItem('event Claimed(bytes32 indexed emailHash, address indexed receiver, uint256 amount)'),
-  parseAbiItem('event Transferred(bytes32 indexed fromHash, bytes32 indexed toHash, address indexed caller, uint256 amount)'),
-] as const
-
+// ─── 交易紀錄（走後端 /api/activity → Basescan，可靠不限流）────────────────
 type Activity = {
   kind: 'deposit' | 'claim' | 'send' | 'receive'
   amount: bigint
-  blockNumber: bigint
   txHash: string
   counterpartyHash?: string
-  tsApprox: number // 估算的 unix 秒（用 block 號推算，Base ~2s/block）
+  ts: number // unix 秒（Basescan 給的真實時間，非估算）
 }
 
 const ACTIVITY_LABEL: Record<Activity['kind'], string> = {
@@ -50,6 +40,7 @@ const ACTIVITY_LABEL: Record<Activity['kind'], string> = {
 }
 
 function relTime(secAgo: number): string {
+  if (secAgo < 0) secAgo = 0
   if (secAgo < 60) return 'just now'
   if (secAgo < 3600) return `${Math.floor(secAgo / 60)}m ago`
   if (secAgo < 86400) return `${Math.floor(secAgo / 3600)}h ago`
@@ -57,49 +48,22 @@ function relTime(secAgo: number): string {
 }
 
 /**
- * 讀取某 emailHash 相關的所有 vault 活動。
- * 因為公開 RPC 限制 getLogs 每次最多 50000 blocks，分 chunk 查，
- * 然後在前端解碼 + 過濾出跟這個 hash 有關的事件。
+ * 讀取某 emailHash 的交易紀錄。
+ * 走後端 Cloudflare Function（/api/activity），它用 Basescan API 查 + 解析，
+ * 回傳已經整理好的 list。前端只要一個 fetch。
  */
 async function fetchVaultActivity(emailHash: `0x${string}`): Promise<Activity[]> {
-  const vault = getEmailVaultAddress()
-  const latest = (await (publicClient as any).getBlockNumber()) as bigint
-
-  // 收集所有 chunk 的 raw logs
-  const rawLogs: any[] = []
-  for (let from = VAULT_DEPLOY_BLOCK; from <= latest; from += LOG_CHUNK + 1n) {
-    const to = from + LOG_CHUNK > latest ? latest : from + LOG_CHUNK
-    try {
-      const chunk = await (publicClient as any).getLogs({ address: vault, fromBlock: from, toBlock: to })
-      rawLogs.push(...chunk)
-    } catch (e) {
-      console.warn('[activity] getLogs chunk failed', from, to, e)
-    }
-  }
-
-  // 解碼
-  const decoded = parseEventLogs({ abi: VAULT_EVENTS as any, logs: rawLogs })
-
-  const nowSec = Math.floor(Date.now() / 1000)
-  const tsOf = (bn: bigint) => nowSec - Number(latest - bn) * 2 // Base ~2s/block
-
-  const out: Activity[] = []
-  for (const log of decoded as any[]) {
-    const a = log.args
-    const base = { amount: a.amount, blockNumber: log.blockNumber, txHash: log.transactionHash, tsApprox: tsOf(log.blockNumber) }
-    if (log.eventName === 'Deposited' && a.emailHash === emailHash) {
-      out.push({ kind: 'deposit', ...base })
-    } else if (log.eventName === 'Claimed' && a.emailHash === emailHash) {
-      out.push({ kind: 'claim', ...base })
-    } else if (log.eventName === 'Transferred' && a.fromHash === emailHash) {
-      out.push({ kind: 'send', ...base, counterpartyHash: a.toHash })
-    } else if (log.eventName === 'Transferred' && a.toHash === emailHash) {
-      out.push({ kind: 'receive', ...base, counterpartyHash: a.fromHash })
-    }
-  }
-
-  out.sort((x, y) => (y.blockNumber > x.blockNumber ? 1 : y.blockNumber < x.blockNumber ? -1 : 0))
-  return out.slice(0, 15) // 只顯示最近 15 筆
+  const res = await fetch(`/api/activity?hash=${emailHash}`)
+  if (!res.ok) throw new Error(`activity api ${res.status}`)
+  const data = (await res.json()) as any
+  if (!data?.ok || !Array.isArray(data.activity)) return []
+  return data.activity.map((a: any) => ({
+    kind: a.kind,
+    amount: BigInt(a.amount),
+    txHash: a.txHash,
+    counterpartyHash: a.counterpartyHash,
+    ts: Number(a.timeStamp),
+  }))
 }
 
 async function getExternalAccount(provider: any): Promise<`0x${string}` | undefined> {
@@ -762,7 +726,7 @@ export function Dashboard() {
                 {activityLoading ? 'Loading…' : 'Refresh ↻'}
               </button>
             </div>
-            {activity === null || activityLoading ? (
+            {activity === null ? (
               <div style={{ padding: '16px 14px', textAlign: 'center', color: 'var(--mute)', fontSize: 13 }}>
                 Loading activity…
               </div>
@@ -782,8 +746,8 @@ export function Dashboard() {
                       <span className="activity-title">{ACTIVITY_LABEL[a.kind]}</span>
                       <span className="activity-sub">
                         {a.counterpartyHash
-                          ? `${a.counterpartyHash.slice(0, 8)}…${a.counterpartyHash.slice(-4)} · ${relTime(nowSec - a.tsApprox)}`
-                          : relTime(nowSec - a.tsApprox)}
+                          ? `${a.counterpartyHash.slice(0, 8)}…${a.counterpartyHash.slice(-4)} · ${relTime(nowSec - a.ts)}`
+                          : relTime(nowSec - a.ts)}
                       </span>
                     </span>
                     <span className={`activity-amount ${a.kind === 'deposit' || a.kind === 'receive' ? 'in' : 'out'}`}>
