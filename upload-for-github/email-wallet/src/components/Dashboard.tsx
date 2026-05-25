@@ -641,6 +641,15 @@ export function Dashboard() {
   useEffect(() => { fetchBalance() }, [fetchBalance])
   useEffect(() => { fetchActivity() }, [fetchActivity])
 
+  // 交易廣播後鏈上還沒確認 → 立刻讀會是舊值。
+  // 輪詢幾次（0s / 3s / 7s / 12s）讓 UI 在交易上鏈後自動補上，不用手動刷新。
+  const refreshAll = useCallback(() => {
+    const tick = () => { fetchBalance(); fetchActivity() }
+    tick()
+    const timers = [3000, 7000, 12000].map((ms) => setTimeout(tick, ms))
+    return () => timers.forEach(clearTimeout)
+  }, [fetchBalance, fetchActivity])
+
   const displayBalance = balanceWei !== null ? fmtUsd(balanceWei) : '—'
   const firstName = email ? email.split('@')[0] : ''
   const vaultAddr = getEmailVaultAddress()
@@ -749,7 +758,7 @@ export function Dashboard() {
             <div className="recent-head">
               <span className="label-eyebrow">Recent activity</span>
               <button className="btn btn-ghost" style={{ height: 28, padding: '0 10px', fontSize: 12 }}
-                onClick={() => { fetchBalance(); fetchActivity() }} disabled={activityLoading}>
+                onClick={() => { refreshAll() }} disabled={activityLoading}>
                 {activityLoading ? 'Loading…' : 'Refresh ↻'}
               </button>
             </div>
@@ -804,7 +813,7 @@ export function Dashboard() {
         externalWallet={externalWallet}
         walletsReady={walletsReady}
         onClose={() => setDepositOpen(false)}
-        onSuccess={() => { setDepositOpen(false); fetchBalance(); fetchActivity() }}
+        onSuccess={() => { setDepositOpen(false); refreshAll() }}
       />
       <SendModal
         open={sendOpen}
@@ -812,7 +821,7 @@ export function Dashboard() {
         fromEmail={email || ''}
         balanceWei={balanceWei}
         onClose={() => setSendOpen(false)}
-        onSuccess={() => { setSendOpen(false); fetchBalance(); fetchActivity() }}
+        onSuccess={() => { setSendOpen(false); refreshAll() }}
       />
       <ClaimModal
         open={claimOpen}
@@ -823,7 +832,7 @@ export function Dashboard() {
         externalWallet={externalWallet}
         walletsReady={walletsReady}
         onClose={() => setClaimOpen(false)}
-        onSuccess={() => { setClaimOpen(false); fetchBalance(); fetchActivity() }}
+        onSuccess={() => { setClaimOpen(false); refreshAll() }}
       />
     </>
   )
