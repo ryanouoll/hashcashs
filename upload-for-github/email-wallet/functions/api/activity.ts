@@ -50,6 +50,14 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
   }
 
   const key = ctx.env.BASESCAN_API_KEY || ''
+  // 診斷：如果 runtime 拿不到 key，明確回報（而不是讓 Etherscan 回模糊錯誤）
+  if (!key) {
+    return json(500, {
+      ok: false,
+      error: 'BASESCAN_API_KEY not available to function at runtime',
+      hint: 'Set it in Cloudflare Pages → Settings → Environment variables (Production), then trigger a NEW deployment (push a commit, not just Retry).',
+    })
+  }
   const base = `https://api.etherscan.io/v2/api?chainid=${CHAIN_ID}&module=logs&action=getLogs&address=${VAULT}&fromBlock=${DEPLOY_BLOCK}&toBlock=latest`
 
   // 一次抓合約全部 log（demo 量小，1000 筆內），server 端 filter
