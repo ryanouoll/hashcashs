@@ -10,8 +10,9 @@
 
 type Env = Record<string, never>
 
-const VAULT = '0xE856d828bD4DB6123b5d6C6C7405432eC722dA17'
-const DEPLOY_BLOCK = 41726470
+// EmailVaultUSDC v2(非託管、簽名授權版)。deploy 後回填地址與起始 block。
+const VAULT = '0x103d9dEffc626C5F60C8842fbff608c68Ba5F218' // v2, deployed 2026-07-19
+const DEPLOY_BLOCK = 44352500
 const CHUNK = 49000
 
 // 多個 RPC fallback（依序試，第一個成功就用）
@@ -21,11 +22,14 @@ const RPCS = [
   'https://sepolia.base.org',
 ]
 
-// event topic0（keccak256 of signature）
+// event topic0（keccak256 of signature）— v2 合約
 const TOPIC = {
+  // Deposited(bytes32 indexed emailHash, address indexed sender, uint256 amount)
   Deposited: '0x87d4c0b5e30d6808bc8a94ba1c4d839b29d664151551a31753387ee9ef48429b',
-  Claimed: '0x0508a8b4117d9a7b3d8f5895f6413e61b4f9a2df35afbfb41e78d0ecfff1843f',
-  Transferred: '0xc224fab2b75541733ebf61d71cd74f10394fd2f2795424b70b7d05f7bff7f486',
+  // Withdrawn(bytes32 indexed emailHash, address indexed owner, address indexed to, uint256 amount)
+  Withdrawn: '0xa6786aab7dbbc48b4b0387488b407bd81448030ab207b50bea7dbb5fbc1cd9eb',
+  // Refunded(bytes32 indexed emailHash, address indexed depositor, uint256 amount)
+  Refunded: '0xf552ca82e113ac3c539c3d617f29fcd19c172a0c75dad017555c9e109f7fe183',
 }
 
 function json(status: number, data: unknown, extra?: HeadersInit) {
@@ -103,7 +107,7 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
   const tsOf = (bnHex: string) => nowSec - (latest - Number(hexToBig(bnHex))) * 2 // Base ~2s/block
 
   type Item = {
-    kind: 'deposit' | 'claim' | 'send' | 'receive'
+    kind: 'deposit' | 'claim' | 'refund'
     amount: string
     txHash: string
     timeStamp: number
@@ -113,22 +117,17 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
   const out: Item[] = []
   for (const log of rawLogs) {
     const topic0 = (log.topics?.[0] || '').toLowerCase()
+    if (norm32(log.topics?.[1] || '') !== hash) continue // 這三種 event 的 topic1 都是 emailHash
     const txHash = log.transactionHash
     const timeStamp = tsOf(log.blockNumber)
     const amount = hexToBig(log.data).toString()
 
-    if (topic0 === TOPIC.Deposited && norm32(log.topics[1]) === hash) {
+    if (topic0 === TOPIC.Deposited) {
       out.push({ kind: 'deposit', amount, txHash, timeStamp })
-    } else if (topic0 === TOPIC.Claimed && norm32(log.topics[1]) === hash) {
+    } else if (topic0 === TOPIC.Withdrawn) {
       out.push({ kind: 'claim', amount, txHash, timeStamp })
-    } else if (topic0 === TOPIC.Transferred) {
-      const fromHash = norm32(log.topics[1])
-      const toHash = norm32(log.topics[2])
-      if (fromHash === hash) {
-        out.push({ kind: 'send', amount, txHash, timeStamp, counterpartyHash: toHash })
-      } else if (toHash === hash) {
-        out.push({ kind: 'receive', amount, txHash, timeStamp, counterpartyHash: fromHash })
-      }
+    } else if (topic0 === TOPIC.Refunded) {
+      out.push({ kind: 'refund', amount, txHash, timeStamp })
     }
   }
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
-import { usePrivy, useWallets, useSendTransaction } from '@privy-io/react-auth'
+import { usePrivy, useWallets, useSendTransaction, useSignTypedData } from '@privy-io/react-auth'
 import { formatUnits, parseUnits, encodeFunctionData } from 'viem'
 import { baseSepolia } from 'viem/chains'
 import { hashEmail } from '../lib/email'
@@ -9,6 +9,9 @@ import {
   USDC_DECIMALS,
   getEmailVaultAddress,
   getUsdcAddress,
+  requestBindTicket,
+  VAULT_EIP712_DOMAIN,
+  WITHDRAW_TYPES,
 } from '../lib/emailVault'
 import { publicClient, makeWalletClient } from '../lib/viemClients'
 import { getPrivyUserEmail } from '../lib/privyUser'
@@ -25,18 +28,17 @@ function fmtUsd(microUsdc: bigint): string {
 
 // ─── 交易紀錄（走後端 /api/activity → Basescan，可靠不限流）────────────────
 type Activity = {
-  kind: 'deposit' | 'claim' | 'send' | 'receive'
+  kind: 'deposit' | 'claim' | 'refund'
   amount: bigint
   txHash: string
   counterpartyHash?: string
-  ts: number // unix 秒（Basescan 給的真實時間，非估算）
+  ts: number // unix 秒
 }
 
 const ACTIVITY_LABEL: Record<Activity['kind'], string> = {
-  deposit: 'Deposited from wallet',
-  claim: 'Withdrawn to wallet',
-  send: 'Sent',
-  receive: 'Received',
+  deposit: 'Received', // 存進這個金庫(自己 top-up 或別人付款)
+  claim: 'Withdrawn',  // 本人簽名提領(claim 或 send 的第一步)
+  refund: 'Refunded to sender',
 }
 
 function relTime(secAgo: number): string {
@@ -86,6 +88,80 @@ async function ensureBaseSepolia(provider: any, walletClient: any) {
       })
     }
   } catch { /* ignore */ }
+}
+
+// ─── 非託管提領(v2 核心)────────────────────────────────────────────────────
+/**
+ * 用「綁定本人的 EIP-712 簽名」把錢從自己的金庫提到 `to`。
+ * 流程:後端 Bind 票證 → 本人簽 Withdraw → bindAndWithdraw(gas 由 Privy 代付,零彈窗)。
+ * 合約只認簽名,不認 msg.sender — 所以誰付 gas 都不影響安全。
+ */
+function useOwnerWithdraw() {
+  const { getAccessToken } = usePrivy()
+  const { signTypedData } = useSignTypedData()
+  const { sendTransaction } = useSendTransaction()
+
+  return useCallback(async ({ to, amountWei, onStatus }: {
+    /** 省略 = 提到自己的 embedded wallet(ticket.owner) */
+    to?: `0x${string}`
+    amountWei: bigint
+    onStatus?: (s: string) => void
+  }): Promise<{ hash: `0x${string}`; owner: `0x${string}` }> => {
+    const vault = getEmailVaultAddress()
+
+    onStatus?.('Verifying your account…')
+    const token = await getAccessToken()
+    if (!token) throw new Error('Not signed in. Please log in again.')
+    const ticket = await requestBindTicket(token)
+    const dest = (to ?? ticket.owner) as `0x${string}`
+
+    const nonce = (await (publicClient as any).readContract({
+      address: vault, abi: EMAIL_VAULT_ABI, functionName: 'nonces', args: [ticket.owner],
+    })) as bigint
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600)
+
+    onStatus?.('Authorizing…')
+    const { signature: ownerSig } = await signTypedData(
+      {
+        domain: VAULT_EIP712_DOMAIN(vault),
+        types: WITHDRAW_TYPES,
+        primaryType: 'Withdraw',
+        message: { emailHash: ticket.emailHash, to: dest, amount: amountWei, nonce, deadline },
+      } as any,
+      { uiOptions: { showWalletUIs: false }, address: ticket.owner },
+    )
+
+    onStatus?.('Submitting…')
+    const data = encodeFunctionData({
+      abi: EMAIL_VAULT_ABI,
+      functionName: 'bindAndWithdraw',
+      args: [ticket.emailHash, ticket.owner, ticket.signature, dest, amountWei, deadline, ownerSig as `0x${string}`],
+    })
+    const { hash } = await sendTransaction(
+      { to: vault, data, chainId: baseSepolia.id },
+      { sponsor: true, uiOptions: { showWalletUIs: false }, address: ticket.owner },
+    )
+    onStatus?.('Waiting for confirmation…')
+    await (publicClient as any).waitForTransactionReceipt({ hash, timeout: 90_000 })
+    return { hash, owner: ticket.owner }
+  }, [getAccessToken, signTypedData, sendTransaction])
+}
+
+/** 未綁定金庫有 $500 上限 — 存款前先檢查,給友善錯誤而不是 revert */
+async function checkUnboundCap(vault: `0x${string}`, toHash: `0x${string}`, amountWei: bigint): Promise<string | null> {
+  try {
+    const [ownerAddr, bal, cap] = await Promise.all([
+      (publicClient as any).readContract({ address: vault, abi: EMAIL_VAULT_ABI, functionName: 'ownerOf', args: [toHash] }) as Promise<string>,
+      (publicClient as any).readContract({ address: vault, abi: EMAIL_VAULT_ABI, functionName: 'balances', args: [toHash] }) as Promise<bigint>,
+      (publicClient as any).readContract({ address: vault, abi: EMAIL_VAULT_ABI, functionName: 'UNBOUND_VAULT_CAP', args: [] }) as Promise<bigint>,
+    ])
+    const isUnbound = !ownerAddr || /^0x0{40}$/i.test(ownerAddr)
+    if (isUnbound && bal + amountWei > cap) {
+      const room = cap > bal ? cap - bal : 0n
+      return `Unclaimed accounts are capped at $${fmtUsd(cap)} until the recipient signs in once. Room left: $${fmtUsd(room)}.`
+    }
+  } catch { /* 檢查失敗就交給合約 revert */ }
+  return null
 }
 
 // ─── DepositModal ──────────────────────────────────────────────────────────
@@ -148,6 +224,10 @@ function DepositModal({ open, email, emailHash, externalWallet, walletsReady, on
         )
         setIsError(true); setLoading(false); return
       }
+
+      // 0.5 未綁定金庫上限檢查(v2 合約:$500 cap until first claim)
+      const capMsg = await checkUnboundCap(vault, emailHash as `0x${string}`, amountWei)
+      if (capMsg) { setStatus(capMsg); setIsError(true); setLoading(false); return }
 
       // 1. 檢查 USDC allowance；不足就 approve 一個超大數（infinite approve）
       //    → 之後同一個 vault 不用再 approve，只需要 1 tx 就能 deposit
@@ -268,9 +348,8 @@ function DepositModal({ open, email, emailHash, externalWallet, walletsReady, on
 
 // ─── SendModal ─────────────────────────────────────────────────────────────
 // Uses Privy useSendTransaction with sponsor:true + showWalletUIs:false → zero popup, gas sponsored
-function SendModal({ open, fromEmailHash, fromEmail, balanceWei, onClose, onSuccess }: {
+function SendModal({ open, fromEmail, balanceWei, onClose, onSuccess }: {
   open: boolean
-  fromEmailHash: string
   fromEmail: string
   balanceWei: bigint | null
   onClose: () => void
@@ -298,6 +377,7 @@ function SendModal({ open, fromEmailHash, fromEmail, balanceWei, onClose, onSucc
   }
 
   const { sendTransaction } = useSendTransaction()
+  const ownerWithdraw = useOwnerWithdraw()
 
   async function onSend() {
     setStatus(''); setIsError(false)
@@ -316,27 +396,46 @@ function SendModal({ open, fromEmailHash, fromEmail, balanceWei, onClose, onSucc
 
     setLoading(true)
     try {
-      setStatus('Sending…')
-      const data = encodeFunctionData({
-        abi: EMAIL_VAULT_ABI,
-        functionName: 'transfer',
-        args: [fromEmailHash as `0x${string}`, toHash as `0x${string}`, amountWei],
-      })
+      const vault = getEmailVaultAddress()
+      const usdc = getUsdcAddress()
 
-      // Privy's useSendTransaction → routes through gas-sponsorship relay,
-      // sponsor:true asks Privy to cover gas, showWalletUIs:false hides the approval modal
-      const result = await sendTransaction(
-        {
-          to: getEmailVaultAddress(),
-          data,
-          chainId: baseSepolia.id,
-        },
-        {
-          sponsor: true,
-          uiOptions: { showWalletUIs: false },
-        },
+      // v2 非託管:合約沒有內部 email→email 轉帳(那正是舊漏洞)。
+      // Send = ①本人簽名把錢提到自己的 embedded wallet → ②再存進對方的金庫。
+      // 兩步都由 Privy 代付 gas,零彈窗,UX 不變。
+
+      // 0. 對方是未綁定金庫的話,先檢查 $500 上限
+      const capMsg = await checkUnboundCap(vault, toHash as `0x${string}`, amountWei)
+      if (capMsg) { setStatus(capMsg); setIsError(true); setLoading(false); return }
+
+      // 1. 提領到自己的 embedded wallet(bind + withdraw,一筆交易,gas 代付)
+      const { owner } = await ownerWithdraw({ amountWei, onStatus: setStatus })
+
+      // 2. embedded wallet 對 vault 的 USDC allowance 不足就先 approve(infinite,一次性)
+      const allowance = (await (publicClient as any).readContract({
+        address: usdc, abi: USDC_ABI, functionName: 'allowance', args: [owner, vault],
+      })) as bigint
+      if (allowance < amountWei) {
+        setStatus('One-time setup…')
+        const approveData = encodeFunctionData({
+          abi: USDC_ABI, functionName: 'approve', args: [vault, (1n << 256n) - 1n],
+        })
+        const { hash: approveHash } = await sendTransaction(
+          { to: usdc, data: approveData, chainId: baseSepolia.id },
+          { sponsor: true, uiOptions: { showWalletUIs: false }, address: owner },
+        )
+        await (publicClient as any).waitForTransactionReceipt({ hash: approveHash, timeout: 90_000 })
+      }
+
+      // 3. 存進對方的金庫
+      setStatus('Delivering…')
+      const depositData = encodeFunctionData({
+        abi: EMAIL_VAULT_ABI, functionName: 'deposit', args: [toHash as `0x${string}`, amountWei],
+      })
+      const { hash } = await sendTransaction(
+        { to: vault, data: depositData, chainId: baseSepolia.id },
+        { sponsor: true, uiOptions: { showWalletUIs: false }, address: owner },
       )
-      const hash = (result as any)?.hash || (result as any)?.transactionHash || String(result)
+      await (publicClient as any).waitForTransactionReceipt({ hash, timeout: 90_000 })
 
       setTxHash(hash)
       void sendDepositEmailNotification({
@@ -444,13 +543,11 @@ function SendModal({ open, fromEmailHash, fromEmail, balanceWei, onClose, onSucc
 }
 
 // ─── ClaimModal ────────────────────────────────────────────────────────────
-function ClaimModal({ open, email, emailHash, walletAddress, balanceWei, externalWallet, walletsReady, onClose, onSuccess }: {
+function ClaimModal({ open, email, walletAddress, balanceWei, walletsReady, onClose, onSuccess }: {
   open: boolean
   email: string
-  emailHash: string
   walletAddress: string
   balanceWei: bigint | null
-  externalWallet: any
   walletsReady: boolean
   onClose: () => void
   onSuccess: () => void
@@ -466,31 +563,29 @@ function ClaimModal({ open, email, emailHash, walletAddress, balanceWei, externa
     if (balanceWei !== null) setAmount(formatUnits(balanceWei, USDC_DECIMALS))
   }
 
+  const ownerWithdraw = useOwnerWithdraw()
+
   async function onClaim() {
     setStatus(''); setIsError(false)
     if (!amount.trim()) { setStatus('Enter an amount.'); setIsError(true); return }
-    if (!externalWallet) { setStatus('Connect MetaMask first.'); setIsError(true); return }
+    if (!walletAddress) { setStatus('Connect MetaMask first.'); setIsError(true); return }
 
     let amountWei: bigint
     try { amountWei = parseUnits(amount as `${number}`, USDC_DECIMALS) }
     catch { setStatus('Invalid USD amount.'); setIsError(true); return }
     if (amountWei <= 0n) { setStatus('Amount must be greater than 0.'); setIsError(true); return }
+    if (balanceWei !== null && amountWei > balanceWei) {
+      setStatus('Amount exceeds your vault balance.'); setIsError(true); return
+    }
 
     setLoading(true)
     try {
-      const provider = await externalWallet.getEthereumProvider()
-      const walletClient = makeWalletClient(provider)
-      const account = await getExternalAccount(provider)
-      await ensureBaseSepolia(provider, walletClient)
-
-      setStatus('Confirm in your wallet…')
-      await (walletClient as any).writeContract({
-        chain: baseSepolia,
-        address: getEmailVaultAddress(),
-        abi: EMAIL_VAULT_ABI,
-        functionName: 'claim',
-        args: [emailHash as `0x${string}`, amountWei],
-        account,
+      // v2 非託管:提領 = 本人 EIP-712 簽名授權(bindAndWithdraw),
+      // gas 由 Privy 代付 — MetaMask 只當收款地址,不用付 gas、不會跳確認視窗。
+      await ownerWithdraw({
+        to: walletAddress as `0x${string}`,
+        amountWei,
+        onStatus: setStatus,
       })
 
       onSuccess()
@@ -540,10 +635,10 @@ function ClaimModal({ open, email, emailHash, walletAddress, balanceWei, externa
         <div className="modal-foot">
           <button className="btn btn-primary btn-block" onClick={onClaim} disabled={loading || !walletsReady}>
             {loading
-              ? <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" className="spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> Confirming…</>
+              ? <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" className="spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> {status || 'Confirming…'}</>
               : 'Claim'}
           </button>
-          <div className="modal-fineprint">Gas is paid from your connected wallet on Base Sepolia.</div>
+          <div className="modal-fineprint">No gas needed — you authorize with a signature; the fee is sponsored.</div>
         </div>
       </div>
     </div>
@@ -739,8 +834,8 @@ export function Dashboard() {
                 {activity.map((a) => (
                   <a key={a.txHash + a.kind} className="activity-row"
                     href={`https://sepolia.basescan.org/tx/${a.txHash}`} target="_blank" rel="noreferrer">
-                    <span className={`activity-icon ${a.kind === 'deposit' || a.kind === 'receive' ? 'in' : 'out'}`}>
-                      {a.kind === 'deposit' || a.kind === 'receive' ? '↓' : '↑'}
+                    <span className={`activity-icon ${a.kind === 'deposit' ? 'in' : 'out'}`}>
+                      {a.kind === 'deposit' ? '↓' : '↑'}
                     </span>
                     <span className="activity-main">
                       <span className="activity-title">{ACTIVITY_LABEL[a.kind]}</span>
@@ -750,8 +845,8 @@ export function Dashboard() {
                           : relTime(nowSec - a.ts)}
                       </span>
                     </span>
-                    <span className={`activity-amount ${a.kind === 'deposit' || a.kind === 'receive' ? 'in' : 'out'}`}>
-                      {a.kind === 'deposit' || a.kind === 'receive' ? '+' : '−'}${fmtUsd(a.amount)}
+                    <span className={`activity-amount ${a.kind === 'deposit' ? 'in' : 'out'}`}>
+                      {a.kind === 'deposit' ? '+' : '−'}${fmtUsd(a.amount)}
                     </span>
                   </a>
                 ))}
@@ -781,7 +876,6 @@ export function Dashboard() {
       />
       <SendModal
         open={sendOpen}
-        fromEmailHash={emailHash}
         fromEmail={email || ''}
         balanceWei={balanceWei}
         onClose={() => setSendOpen(false)}
@@ -790,10 +884,8 @@ export function Dashboard() {
       <ClaimModal
         open={claimOpen}
         email={email || ''}
-        emailHash={emailHash}
         walletAddress={walletAddress}
         balanceWei={balanceWei}
-        externalWallet={externalWallet}
         walletsReady={walletsReady}
         onClose={() => setClaimOpen(false)}
         onSuccess={() => { setClaimOpen(false); refreshAll() }}

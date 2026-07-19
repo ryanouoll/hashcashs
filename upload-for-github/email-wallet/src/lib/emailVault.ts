@@ -1,12 +1,13 @@
 import type { Abi } from 'viem'
 
 /**
- * EmailVaultUSDC ABI (Base Sepolia)
+ * EmailVaultUSDC v2 ABI(非託管、簽名授權版,Base Sepolia)
  *
- * 主要差異 vs 舊 EmailVault：
- *  - deposit 不再 payable，多吃一個 amount 參數
- *  - 合約綁定 USDC token（6 decimals）
- *  - 多了 usdc() / totalUsdcHeld() 兩個 view
+ * vs v1 的差異:
+ *  - `claim` / `transfer`(無驗證,漏洞來源)已移除
+ *  - 新增 `bind`(後端 Bind 票證)、`withdraw` / `bindAndWithdraw`(本人 EIP-712 簽名)
+ *  - 新增 `refund`(存款人取回 14 天未綁定的錢)
+ *  - 新增風險上限:未綁定金庫 500 USDC、全合約 10,000 USDC
  */
 export const EMAIL_VAULT_ABI = [
   {
@@ -21,7 +22,46 @@ export const EMAIL_VAULT_ABI = [
   },
   {
     type: 'function',
-    name: 'claim',
+    name: 'bind',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'emailHash', type: 'bytes32' },
+      { name: 'owner', type: 'address' },
+      { name: 'bindSig', type: 'bytes' },
+    ],
+    outputs: [],
+  },
+  {
+    type: 'function',
+    name: 'withdraw',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'emailHash', type: 'bytes32' },
+      { name: 'to', type: 'address' },
+      { name: 'amount', type: 'uint256' },
+      { name: 'deadline', type: 'uint256' },
+      { name: 'ownerSig', type: 'bytes' },
+    ],
+    outputs: [],
+  },
+  {
+    type: 'function',
+    name: 'bindAndWithdraw',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'emailHash', type: 'bytes32' },
+      { name: 'owner', type: 'address' },
+      { name: 'bindSig', type: 'bytes' },
+      { name: 'to', type: 'address' },
+      { name: 'amount', type: 'uint256' },
+      { name: 'deadline', type: 'uint256' },
+      { name: 'ownerSig', type: 'bytes' },
+    ],
+    outputs: [],
+  },
+  {
+    type: 'function',
+    name: 'refund',
     stateMutability: 'nonpayable',
     inputs: [
       { name: 'emailHash', type: 'bytes32' },
@@ -31,20 +71,37 @@ export const EMAIL_VAULT_ABI = [
   },
   {
     type: 'function',
-    name: 'transfer',
-    stateMutability: 'nonpayable',
-    inputs: [
-      { name: 'fromHash', type: 'bytes32' },
-      { name: 'toHash', type: 'bytes32' },
-      { name: 'amount', type: 'uint256' },
-    ],
-    outputs: [],
-  },
-  {
-    type: 'function',
     name: 'balances',
     stateMutability: 'view',
     inputs: [{ name: '', type: 'bytes32' }],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'ownerOf',
+    stateMutability: 'view',
+    inputs: [{ name: '', type: 'bytes32' }],
+    outputs: [{ name: '', type: 'address' }],
+  },
+  {
+    type: 'function',
+    name: 'nonces',
+    stateMutability: 'view',
+    inputs: [{ name: '', type: 'address' }],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'totalBalance',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'UNBOUND_VAULT_CAP',
+    stateMutability: 'view',
+    inputs: [],
     outputs: [{ name: '', type: 'uint256' }],
   },
   {
@@ -63,7 +120,7 @@ export const EMAIL_VAULT_ABI = [
   },
 ] as const satisfies Abi
 
-/** 最小 ERC-20 ABI（給 deposit 前 approve 用） */
+/** 最小 ERC-20 ABI(給 deposit 前 approve 用) */
 export const USDC_ABI = [
   {
     type: 'function',
@@ -102,11 +159,11 @@ export const USDC_ABI = [
 ] as const satisfies Abi
 
 /**
- * EmailVaultUSDC 合約地址（Base Sepolia）。
- * ⚠️ 不再讀 import.meta.env.VITE_EMAIL_VAULT_ADDRESS — Cloudflare 上的舊 env
- *    指向舊 ETH 版合約，會讓 USDC ABI 呼叫 revert。日後要升級合約直接改這常數。
+ * EmailVaultUSDC v2 合約地址(Base Sepolia)。
+ * ⚠️ 不讀 Cloudflare env(build-vs-runtime 的坑)。升級合約直接改這常數。
+ * 部署後由 ignition 回填。
  */
-const VAULT_BASE_SEPOLIA = '0xE856d828bD4DB6123b5d6C6C7405432eC722dA17'
+const VAULT_BASE_SEPOLIA = '0x103d9dEffc626C5F60C8842fbff608c68Ba5F218' // v2, deployed 2026-07-19
 
 export function getEmailVaultAddress(): `0x${string}` {
   return VAULT_BASE_SEPOLIA as `0x${string}`
@@ -119,5 +176,40 @@ export function getUsdcAddress(): `0x${string}` {
   return addr as `0x${string}`
 }
 
-/** USDC 的 decimals（6）— 整個前端用 USD 顯示但儲存為 micro-USDC */
+/** USDC 的 decimals(6)— 整個前端用 USD 顯示但儲存為 micro-USDC */
 export const USDC_DECIMALS = 6
+
+// ─── EIP-712(要跟合約 / functions/api/bind.ts 完全一致)────────────────────
+export const VAULT_EIP712_DOMAIN = (vault: `0x${string}`) => ({
+  name: 'EmailVaultUSDC',
+  version: '1',
+  chainId: 84532,
+  verifyingContract: vault,
+})
+
+export const WITHDRAW_TYPES = {
+  Withdraw: [
+    { name: 'emailHash', type: 'bytes32' },
+    { name: 'to', type: 'address' },
+    { name: 'amount', type: 'uint256' },
+    { name: 'nonce', type: 'uint256' },
+    { name: 'deadline', type: 'uint256' },
+  ],
+} as const
+
+/** 向後端要 Bind 票證(要帶 Privy access token) */
+export async function requestBindTicket(accessToken: string): Promise<{
+  emailHash: `0x${string}`
+  owner: `0x${string}`
+  signature: `0x${string}`
+}> {
+  const res = await fetch('/api/bind', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  const data: any = await res.json().catch(() => ({}))
+  if (!res.ok || !data?.ok) {
+    throw new Error(data?.error ? `bind: ${data.error}` : `bind api ${res.status}`)
+  }
+  return { emailHash: data.emailHash, owner: data.owner, signature: data.signature }
+}
