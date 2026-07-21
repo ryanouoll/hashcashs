@@ -39,6 +39,7 @@ export const EMAIL_VAULT_ABI = [
       { name: 'emailHash', type: 'bytes32' },
       { name: 'to', type: 'address' },
       { name: 'amount', type: 'uint256' },
+      { name: 'fee', type: 'uint256' },
       { name: 'deadline', type: 'uint256' },
       { name: 'ownerSig', type: 'bytes' },
     ],
@@ -54,10 +55,18 @@ export const EMAIL_VAULT_ABI = [
       { name: 'bindSig', type: 'bytes' },
       { name: 'to', type: 'address' },
       { name: 'amount', type: 'uint256' },
+      { name: 'fee', type: 'uint256' },
       { name: 'deadline', type: 'uint256' },
       { name: 'ownerSig', type: 'bytes' },
     ],
     outputs: [],
+  },
+  {
+    type: 'function',
+    name: 'MAX_FEE',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint256' }],
   },
   {
     type: 'function',
@@ -163,7 +172,7 @@ export const USDC_ABI = [
  * ⚠️ 不讀 Cloudflare env(build-vs-runtime 的坑)。升級合約直接改這常數。
  * 部署後由 ignition 回填。
  */
-const VAULT_BASE_SEPOLIA = '0x103d9dEffc626C5F60C8842fbff608c68Ba5F218' // v2, deployed 2026-07-19
+const VAULT_BASE_SEPOLIA = '0xE16258Ad4D5B629170e1ABE0D58CBB4ddBa67Cf8' // v2.1 (USDC fee), deployed 2026-07-21
 
 export function getEmailVaultAddress(): `0x${string}` {
   return VAULT_BASE_SEPOLIA as `0x${string}`
@@ -192,10 +201,18 @@ export const WITHDRAW_TYPES = {
     { name: 'emailHash', type: 'bytes32' },
     { name: 'to', type: 'address' },
     { name: 'amount', type: 'uint256' },
+    { name: 'fee', type: 'uint256' },
     { name: 'nonce', type: 'uint256' },
     { name: 'deadline', type: 'uint256' },
   ],
 } as const
+
+/**
+ * 每筆提領收的 USDC 手續費(gas 由平台代墊 ETH,用這個回收成本)。
+ * 使用者「簽名裡就含這個數字」— relayer 不能多收;合約另有 MAX_FEE=$0.25 上限。
+ * 改這個值不用重新部署合約。
+ */
+export const WITHDRAW_FEE = 50_000n // $0.05
 
 /** 向後端要 Bind 票證(要帶 Privy access token) */
 export async function requestBindTicket(accessToken: string): Promise<{

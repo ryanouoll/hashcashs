@@ -97,6 +97,15 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
  *       constants — there is no admin who can raise them; raising them requires
  *       deploying a new contract. Bound vaults have no per-vault cap (ownership
  *       is proven), but still count toward the TVL cap.
+ *
+ *   (F) Withdrawal fee (gas-cost recovery in USDC). Each withdrawal may carry a
+ *       `fee` (<= MAX_FEE) that is part of the OWNER-SIGNED struct — the signer
+ *       always sees and authorizes the exact fee; a relayer can charge less but
+ *       never more. The fee is an internal credit to `feeVaultHash` (set at
+ *       deployment); the operator redeems it via the same bind+withdraw path as
+ *       everyone else, so no privileged movement is introduced. Fee credits are
+ *       exempt from UNBOUND_VAULT_CAP (else accumulated fees would brick all
+ *       withdrawals) and do not change totalBalance (USDC stays in-contract).
  * ─────────────────────────────────────────────────────────────────────────────
  */
 contract EmailVaultUSDC is EIP712, ReentrancyGuard {
@@ -107,6 +116,16 @@ contract EmailVaultUSDC is EIP712, ReentrancyGuard {
 
     /// @notice Backend attestor permitted to authorize bindings only (immutable).
     address public immutable bindSigner;
+
+    /// @notice Vault credited with withdrawal fees (the operator's own emailHash).
+    ///         Fees land HERE as an internal balance — the operator claims them
+    ///         through the exact same bind+withdraw path as any other vault, so
+    ///         this introduces NO privileged fund movement.
+    bytes32 public immutable feeVaultHash;
+
+    /// @notice Hard ceiling on the per-withdrawal fee (0.25 USDC). A malicious
+    ///         frontend/relayer cannot make a signer authorize more than this.
+    uint256 public constant MAX_FEE = 250_000; // 0.25 USDC (6 decimals)
 
     /// @notice Max balance an UNBOUND vault may hold (500 USDC). Constant — no admin can change it.
     uint256 public constant UNBOUND_VAULT_CAP = 500e6;
@@ -143,7 +162,7 @@ contract EmailVaultUSDC is EIP712, ReentrancyGuard {
         keccak256("Bind(bytes32 emailHash,address owner)");
     bytes32 private constant WITHDRAW_TYPEHASH =
         keccak256(
-            "Withdraw(bytes32 emailHash,address to,uint256 amount,uint256 nonce,uint256 deadline)"
+            "Withdraw(bytes32 emailHash,address to,uint256 amount,uint256 fee,uint256 nonce,uint256 deadline)"
         );
 
     event Deposited(bytes32 indexed emailHash, address indexed sender, uint256 amount);
@@ -155,6 +174,7 @@ contract EmailVaultUSDC is EIP712, ReentrancyGuard {
         address indexed to,
         uint256 amount
     );
+    event FeeCharged(bytes32 indexed emailHash, uint256 fee);
 
     error ZeroAddress();
     error ZeroAmount();
@@ -167,19 +187,27 @@ contract EmailVaultUSDC is EIP712, ReentrancyGuard {
     error Expired();
     error VaultCapExceeded();
     error TvlCapExceeded();
+    error FeeTooHigh();
     error AlreadyBound();
     error RefundTooEarly();
     error InsufficientDeposit();
 
     /**
-     * @param _usdc        USDC token. Base Sepolia: 0x036CbD53842c5426634e7929541eC2318f3dCF7e
-     *                                  Base Mainnet:  0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
-     * @param _bindSigner  Backend attestor address (authorizes bindings only).
+     * @param _usdc          USDC token. Base Sepolia: 0x036CbD53842c5426634e7929541eC2318f3dCF7e
+     *                                    Base Mainnet:  0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
+     * @param _bindSigner    Backend attestor address (authorizes bindings only).
+     * @param _feeVaultHash  emailHash credited with withdrawal fees (operator's email).
      */
-    constructor(address _usdc, address _bindSigner) EIP712("EmailVaultUSDC", "1") {
+    constructor(
+        address _usdc,
+        address _bindSigner,
+        bytes32 _feeVaultHash
+    ) EIP712("EmailVaultUSDC", "1") {
         if (_usdc == address(0) || _bindSigner == address(0)) revert ZeroAddress();
+        if (_feeVaultHash == bytes32(0)) revert ZeroEmailHash();
         usdc = IERC20(_usdc);
         bindSigner = _bindSigner;
+        feeVaultHash = _feeVaultHash;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -275,6 +303,10 @@ contract EmailVaultUSDC is EIP712, ReentrancyGuard {
      *         the bound owner's EIP-712 signature. `msg.sender` is irrelevant.
      * @param to        Destination chosen and signed by the owner (any non-zero
      *                  address — owner may withdraw to themselves or pay someone).
+     * @param fee       USDC fee (<= MAX_FEE) the owner agrees to pay for gas
+     *                  sponsorship. Deducted from the vault on top of `amount`
+     *                  and credited to `feeVaultHash`. Part of the signed struct,
+     *                  so a relayer cannot charge more than the owner authorized.
      * @param deadline  Unix timestamp after which the signature is invalid.
      * @param ownerSig  EIP-712 signature over the Withdraw struct, by ownerOf[emailHash].
      */
@@ -282,10 +314,11 @@ contract EmailVaultUSDC is EIP712, ReentrancyGuard {
         bytes32 emailHash,
         address to,
         uint256 amount,
+        uint256 fee,
         uint256 deadline,
         bytes calldata ownerSig
     ) external nonReentrant {
-        _withdraw(emailHash, to, amount, deadline, ownerSig);
+        _withdraw(emailHash, to, amount, fee, deadline, ownerSig);
     }
 
     /**
@@ -298,31 +331,34 @@ contract EmailVaultUSDC is EIP712, ReentrancyGuard {
         bytes calldata bindSig,
         address to,
         uint256 amount,
+        uint256 fee,
         uint256 deadline,
         bytes calldata ownerSig
     ) external nonReentrant {
         _bind(emailHash, owner, bindSig);
-        _withdraw(emailHash, to, amount, deadline, ownerSig);
+        _withdraw(emailHash, to, amount, fee, deadline, ownerSig);
     }
 
     function _withdraw(
         bytes32 emailHash,
         address to,
         uint256 amount,
+        uint256 fee,
         uint256 deadline,
         bytes calldata ownerSig
     ) internal {
         if (to == address(0)) revert ZeroAddress();
         if (amount == 0) revert ZeroAmount();
+        if (fee > MAX_FEE) revert FeeTooHigh();
         if (block.timestamp > deadline) revert Expired();
 
         address owner = ownerOf[emailHash];
         if (owner == address(0)) revert NotBound();
-        if (balances[emailHash] < amount) revert InsufficientBalance();
+        if (balances[emailHash] < amount + fee) revert InsufficientBalance();
 
         uint256 nonce = nonces[owner];
         bytes32 structHash = keccak256(
-            abi.encode(WITHDRAW_TYPEHASH, emailHash, to, amount, nonce, deadline)
+            abi.encode(WITHDRAW_TYPEHASH, emailHash, to, amount, fee, nonce, deadline)
         );
         bytes32 digest = _hashTypedDataV4(structHash);
         if (ECDSA.recover(digest, ownerSig) != owner) revert InvalidWithdrawSignature();
@@ -331,8 +367,16 @@ contract EmailVaultUSDC is EIP712, ReentrancyGuard {
         unchecked {
             nonces[owner] = nonce + 1;
         }
-        balances[emailHash] -= amount;
-        totalBalance -= amount;
+        balances[emailHash] -= amount + fee;
+        totalBalance -= amount; // fee stays inside the contract (credited below)
+
+        if (fee > 0) {
+            // Internal credit to the operator's vault. Deliberately NOT subject to
+            // UNBOUND_VAULT_CAP (it would brick withdrawals once fees accumulate);
+            // TVL is unchanged because the USDC never leaves the contract.
+            balances[feeVaultHash] += fee;
+            emit FeeCharged(emailHash, fee);
+        }
 
         usdc.safeTransfer(to, amount);
 

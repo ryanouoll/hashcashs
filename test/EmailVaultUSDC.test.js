@@ -21,8 +21,9 @@ describe("EmailVaultUSDC (non-custodial, signature-based)", () => {
     const Mock = await ethers.getContractFactory("MockUSDC");
     const usdc = await Mock.deploy();
 
+    const FEE_VAULT = emailHashOf("operator@hashcash.example");
     const Vault = await ethers.getContractFactory("EmailVaultUSDC");
-    const vault = await Vault.deploy(await usdc.getAddress(), bindSigner.address);
+    const vault = await Vault.deploy(await usdc.getAddress(), bindSigner.address, FEE_VAULT);
 
     // fund alice & bob with USDC, infinite-approve the vault
     for (const who of [alice, bob, mallory]) {
@@ -48,6 +49,7 @@ describe("EmailVaultUSDC (non-custodial, signature-based)", () => {
         { name: "emailHash", type: "bytes32" },
         { name: "to", type: "address" },
         { name: "amount", type: "uint256" },
+        { name: "fee", type: "uint256" },
         { name: "nonce", type: "uint256" },
         { name: "deadline", type: "uint256" },
       ],
@@ -55,12 +57,13 @@ describe("EmailVaultUSDC (non-custodial, signature-based)", () => {
 
     const signBind = (signer, emailHash, owner) =>
       signer.signTypedData(domain, BIND_TYPES, { emailHash, owner });
-    const signWithdraw = (signer, emailHash, to, amount, nonce, deadline) =>
-      signer.signTypedData(domain, WITHDRAW_TYPES, { emailHash, to, amount, nonce, deadline });
+    // fee 放最後、預設 0 — 既有測試不用改,fee 測試再明確傳
+    const signWithdraw = (signer, emailHash, to, amount, nonce, deadline, fee = 0n) =>
+      signer.signTypedData(domain, WITHDRAW_TYPES, { emailHash, to, amount, fee, nonce, deadline });
 
     return {
       usdc, vault, deployer, bindSigner, alice, bob, relayer, mallory,
-      domain, signBind, signWithdraw,
+      domain, signBind, signWithdraw, FEE_VAULT,
     };
   }
 
@@ -71,13 +74,15 @@ describe("EmailVaultUSDC (non-custodial, signature-based)", () => {
       expect(await vault.usdc()).to.equal(await usdc.getAddress());
       expect(await vault.bindSigner()).to.equal(bindSigner.address);
     });
-    it("reverts on zero usdc or zero bindSigner", async () => {
+    it("reverts on zero usdc / zero bindSigner / zero feeVaultHash", async () => {
       const [, bindSigner] = await ethers.getSigners();
+      const fv = emailHashOf("operator@hashcash.example");
       const Vault = await ethers.getContractFactory("EmailVaultUSDC");
-      await expect(Vault.deploy(ethers.ZeroAddress, bindSigner.address)).to.be.revertedWithCustomError(Vault, "ZeroAddress");
+      await expect(Vault.deploy(ethers.ZeroAddress, bindSigner.address, fv)).to.be.revertedWithCustomError(Vault, "ZeroAddress");
       const Mock = await ethers.getContractFactory("MockUSDC");
       const usdc = await Mock.deploy();
-      await expect(Vault.deploy(await usdc.getAddress(), ethers.ZeroAddress)).to.be.revertedWithCustomError(Vault, "ZeroAddress");
+      await expect(Vault.deploy(await usdc.getAddress(), ethers.ZeroAddress, fv)).to.be.revertedWithCustomError(Vault, "ZeroAddress");
+      await expect(Vault.deploy(await usdc.getAddress(), bindSigner.address, ethers.ZeroHash)).to.be.revertedWithCustomError(Vault, "ZeroEmailHash");
     });
   });
 
@@ -173,7 +178,7 @@ describe("EmailVaultUSDC (non-custodial, signature-based)", () => {
     it("owner-signed withdraw moves USDC to `to`; relayer pays gas", async () => {
       const { vault, usdc, alice, relayer, signWithdraw, h } = await bound();
       const sig = await signWithdraw(alice, h, alice.address, HUNDRED, 0n, FAR_FUTURE);
-      await expect(vault.connect(relayer).withdraw(h, alice.address, HUNDRED, FAR_FUTURE, sig))
+      await expect(vault.connect(relayer).withdraw(h, alice.address, HUNDRED, 0n, FAR_FUTURE, sig))
         .to.emit(vault, "Withdrawn").withArgs(h, alice.address, alice.address, HUNDRED);
       expect(await vault.balances(h)).to.equal(0n);
       expect(await usdc.balanceOf(alice.address)).to.equal(usd(10000) + HUNDRED);
@@ -184,7 +189,7 @@ describe("EmailVaultUSDC (non-custodial, signature-based)", () => {
       const { vault, usdc, alice, bob, relayer, signWithdraw, h } = await bound();
       const before = await usdc.balanceOf(bob.address);
       const sig = await signWithdraw(alice, h, bob.address, usd(40), 0n, FAR_FUTURE);
-      await vault.connect(relayer).withdraw(h, bob.address, usd(40), FAR_FUTURE, sig);
+      await vault.connect(relayer).withdraw(h, bob.address, usd(40), 0n, FAR_FUTURE, sig);
       expect(await usdc.balanceOf(bob.address)).to.equal(before + usd(40));
       expect(await vault.balances(h)).to.equal(HUNDRED - usd(40));
     });
@@ -192,7 +197,7 @@ describe("EmailVaultUSDC (non-custodial, signature-based)", () => {
     it("INVARIANT 1: a signature from a NON-owner cannot withdraw", async () => {
       const { vault, mallory, relayer, signWithdraw, h } = await bound();
       const sig = await signWithdraw(mallory, h, mallory.address, ONE, 0n, FAR_FUTURE);
-      await expect(vault.connect(relayer).withdraw(h, mallory.address, ONE, FAR_FUTURE, sig))
+      await expect(vault.connect(relayer).withdraw(h, mallory.address, ONE, 0n, FAR_FUTURE, sig))
         .to.be.revertedWithCustomError(vault, "InvalidWithdrawSignature");
     });
 
@@ -200,19 +205,19 @@ describe("EmailVaultUSDC (non-custodial, signature-based)", () => {
       const { vault, bindSigner, relayer, signWithdraw, signBind, h } = await bound();
       // (a) bindSigner produces a Withdraw sig — but it isn't the owner
       const wsig = await signWithdraw(bindSigner, h, bindSigner.address, ONE, 0n, FAR_FUTURE);
-      await expect(vault.connect(relayer).withdraw(h, bindSigner.address, ONE, FAR_FUTURE, wsig))
+      await expect(vault.connect(relayer).withdraw(h, bindSigner.address, ONE, 0n, FAR_FUTURE, wsig))
         .to.be.revertedWithCustomError(vault, "InvalidWithdrawSignature");
       // (b) a Bind-typed signature is not accepted by withdraw (different typehash/digest)
       const bsig = await signBind(bindSigner, h, bindSigner.address);
-      await expect(vault.connect(relayer).withdraw(h, bindSigner.address, ONE, FAR_FUTURE, bsig))
+      await expect(vault.connect(relayer).withdraw(h, bindSigner.address, ONE, 0n, FAR_FUTURE, bsig))
         .to.be.revertedWithCustomError(vault, "InvalidWithdrawSignature");
     });
 
     it("REPLAY: the same withdraw signature cannot be used twice (nonce consumed)", async () => {
       const { vault, alice, relayer, signWithdraw, h } = await bound();
       const sig = await signWithdraw(alice, h, alice.address, usd(40), 0n, FAR_FUTURE);
-      await vault.connect(relayer).withdraw(h, alice.address, usd(40), FAR_FUTURE, sig);
-      await expect(vault.connect(relayer).withdraw(h, alice.address, usd(40), FAR_FUTURE, sig))
+      await vault.connect(relayer).withdraw(h, alice.address, usd(40), 0n, FAR_FUTURE, sig);
+      await expect(vault.connect(relayer).withdraw(h, alice.address, usd(40), 0n, FAR_FUTURE, sig))
         .to.be.revertedWithCustomError(vault, "InvalidWithdrawSignature");
     });
 
@@ -229,14 +234,14 @@ describe("EmailVaultUSDC (non-custodial, signature-based)", () => {
         s.r +
         ethers.toBeHex(sPrime, 32).slice(2) +
         vPrime.toString(16).padStart(2, "0");
-      await expect(vault.connect(relayer).withdraw(h, alice.address, ONE, FAR_FUTURE, malleable))
+      await expect(vault.connect(relayer).withdraw(h, alice.address, ONE, 0n, FAR_FUTURE, malleable))
         .to.be.reverted; // OZ ECDSA rejects high-s
     });
 
     it("EXPIRY: a past deadline reverts", async () => {
       const { vault, alice, relayer, signWithdraw, h } = await bound();
       const sig = await signWithdraw(alice, h, alice.address, ONE, 0n, 1n);
-      await expect(vault.connect(relayer).withdraw(h, alice.address, ONE, 1n, sig))
+      await expect(vault.connect(relayer).withdraw(h, alice.address, ONE, 0n, 1n, sig))
         .to.be.revertedWithCustomError(vault, "Expired");
     });
 
@@ -244,26 +249,26 @@ describe("EmailVaultUSDC (non-custodial, signature-based)", () => {
       const { vault, alice, relayer, signWithdraw } = await loadFixture(deployFixture);
       const unbound = emailHashOf("nobody@x.com");
       const sig = await signWithdraw(alice, unbound, alice.address, ONE, 0n, FAR_FUTURE);
-      await expect(vault.connect(relayer).withdraw(unbound, alice.address, ONE, FAR_FUTURE, sig))
+      await expect(vault.connect(relayer).withdraw(unbound, alice.address, ONE, 0n, FAR_FUTURE, sig))
         .to.be.revertedWithCustomError(vault, "NotBound");
 
       const b = await bound();
-      await expect(b.vault.connect(b.relayer).withdraw(b.h, ethers.ZeroAddress, ONE, FAR_FUTURE,
+      await expect(b.vault.connect(b.relayer).withdraw(b.h, ethers.ZeroAddress, ONE, 0n, FAR_FUTURE,
         await b.signWithdraw(b.alice, b.h, ethers.ZeroAddress, ONE, 0n, FAR_FUTURE)))
         .to.be.revertedWithCustomError(b.vault, "ZeroAddress");
-      await expect(b.vault.connect(b.relayer).withdraw(b.h, b.alice.address, 0, FAR_FUTURE,
+      await expect(b.vault.connect(b.relayer).withdraw(b.h, b.alice.address, 0, 0n, FAR_FUTURE,
         await b.signWithdraw(b.alice, b.h, b.alice.address, 0n, 0n, FAR_FUTURE)))
         .to.be.revertedWithCustomError(b.vault, "ZeroAmount");
-      await expect(b.vault.connect(b.relayer).withdraw(b.h, b.alice.address, usd(99999), FAR_FUTURE,
+      await expect(b.vault.connect(b.relayer).withdraw(b.h, b.alice.address, usd(99999), 0n, FAR_FUTURE,
         await b.signWithdraw(b.alice, b.h, b.alice.address, usd(99999), 0n, FAR_FUTURE)))
         .to.be.revertedWithCustomError(b.vault, "InsufficientBalance");
     });
 
     it("sequential withdrawals work as nonce increments", async () => {
       const { vault, alice, relayer, signWithdraw, h } = await bound();
-      await vault.connect(relayer).withdraw(h, alice.address, usd(30), FAR_FUTURE,
+      await vault.connect(relayer).withdraw(h, alice.address, usd(30), 0n, FAR_FUTURE,
         await signWithdraw(alice, h, alice.address, usd(30), 0n, FAR_FUTURE));
-      await vault.connect(relayer).withdraw(h, alice.address, usd(30), FAR_FUTURE,
+      await vault.connect(relayer).withdraw(h, alice.address, usd(30), 0n, FAR_FUTURE,
         await signWithdraw(alice, h, alice.address, usd(30), 1n, FAR_FUTURE));
       expect(await vault.balances(h)).to.equal(HUNDRED - usd(60));
       expect(await vault.nonces(alice.address)).to.equal(2n);
@@ -278,7 +283,7 @@ describe("EmailVaultUSDC (non-custodial, signature-based)", () => {
       await vault.connect(bob).deposit(h, HUNDRED);
       const bsig = await signBind(bindSigner, h, alice.address);
       const wsig = await signWithdraw(alice, h, alice.address, HUNDRED, 0n, FAR_FUTURE);
-      await expect(vault.connect(relayer).bindAndWithdraw(h, alice.address, bsig, alice.address, HUNDRED, FAR_FUTURE, wsig))
+      await expect(vault.connect(relayer).bindAndWithdraw(h, alice.address, bsig, alice.address, HUNDRED, 0n, FAR_FUTURE, wsig))
         .to.emit(vault, "Bound").withArgs(h, alice.address)
         .to.emit(vault, "Withdrawn").withArgs(h, alice.address, alice.address, HUNDRED);
       expect(await vault.balances(h)).to.equal(0n);
@@ -291,8 +296,85 @@ describe("EmailVaultUSDC (non-custodial, signature-based)", () => {
       const bsig = await signBind(bindSigner, h, alice.address);
       await vault.bind(h, alice.address, bsig);
       const wsig = await signWithdraw(alice, h, alice.address, ONE, 0n, FAR_FUTURE);
-      await expect(vault.connect(relayer).bindAndWithdraw(h, alice.address, bsig, alice.address, ONE, FAR_FUTURE, wsig))
+      await expect(vault.connect(relayer).bindAndWithdraw(h, alice.address, bsig, alice.address, ONE, 0n, FAR_FUTURE, wsig))
         .to.not.be.reverted;
+    });
+  });
+
+  // ───────────────────────────── withdrawal fee ─────────────────────────────
+  describe("withdrawal fee (USDC gas recovery)", () => {
+    const FEE = 50_000n; // $0.05
+
+    async function boundWithFee() {
+      const f = await loadFixture(deployFixture);
+      const h = emailHashOf("alice@gmail.com");
+      await f.vault.connect(f.bob).deposit(h, HUNDRED);
+      await f.vault.bind(h, f.alice.address, await f.signBind(f.bindSigner, h, f.alice.address));
+      return { ...f, h };
+    }
+
+    it("signed fee is deducted and credited to feeVaultHash", async () => {
+      const { vault, usdc, alice, relayer, signWithdraw, h, FEE_VAULT } = await boundWithFee();
+      const sig = await signWithdraw(alice, h, alice.address, usd(10), 0n, FAR_FUTURE, FEE);
+      await expect(vault.connect(relayer).withdraw(h, alice.address, usd(10), FEE, FAR_FUTURE, sig))
+        .to.emit(vault, "FeeCharged").withArgs(h, FEE)
+        .to.emit(vault, "Withdrawn").withArgs(h, alice.address, alice.address, usd(10));
+      expect(await vault.balances(h)).to.equal(HUNDRED - usd(10) - FEE);
+      expect(await vault.balances(FEE_VAULT)).to.equal(FEE);
+      // USDC 只離開 amount;fee 留在合約裡 → invariant 不變
+      expect(await vault.totalBalance()).to.equal(HUNDRED - usd(10));
+      expect(await vault.totalUsdcHeld()).to.equal(HUNDRED - usd(10));
+      expect(await usdc.balanceOf(alice.address)).to.equal(usd(10000) + usd(10));
+    });
+
+    it("relayer cannot charge MORE than the signed fee", async () => {
+      const { vault, alice, relayer, signWithdraw, h } = await boundWithFee();
+      const sig = await signWithdraw(alice, h, alice.address, usd(10), 0n, FAR_FUTURE, FEE);
+      // relayer 想收兩倍 → 簽名對不上
+      await expect(vault.connect(relayer).withdraw(h, alice.address, usd(10), FEE * 2n, FAR_FUTURE, sig))
+        .to.be.revertedWithCustomError(vault, "InvalidWithdrawSignature");
+    });
+
+    it("fee above MAX_FEE reverts even if signed", async () => {
+      const { vault, alice, relayer, signWithdraw, h } = await boundWithFee();
+      const tooHigh = (await vault.MAX_FEE()) + 1n;
+      const sig = await signWithdraw(alice, h, alice.address, usd(10), 0n, FAR_FUTURE, tooHigh);
+      await expect(vault.connect(relayer).withdraw(h, alice.address, usd(10), tooHigh, FAR_FUTURE, sig))
+        .to.be.revertedWithCustomError(vault, "FeeTooHigh");
+    });
+
+    it("amount + fee cannot exceed the vault balance", async () => {
+      const { vault, alice, relayer, signWithdraw, h } = await boundWithFee();
+      const sig = await signWithdraw(alice, h, alice.address, HUNDRED, 0n, FAR_FUTURE, FEE);
+      await expect(vault.connect(relayer).withdraw(h, alice.address, HUNDRED, FEE, FAR_FUTURE, sig))
+        .to.be.revertedWithCustomError(vault, "InsufficientBalance");
+    });
+
+    it("operator redeems accrued fees via normal bind+withdraw (no privileged path)", async () => {
+      const { vault, usdc, alice, bob, relayer, bindSigner, signBind, signWithdraw, h, FEE_VAULT } = await boundWithFee();
+      const sig = await signWithdraw(alice, h, alice.address, usd(10), 0n, FAR_FUTURE, FEE);
+      await vault.connect(relayer).withdraw(h, alice.address, usd(10), FEE, FAR_FUTURE, sig);
+      // operator(這裡用 bob 當 operator 的 EOA)綁定 fee vault 後照常提領
+      await vault.bind(FEE_VAULT, bob.address, await signBind(bindSigner, FEE_VAULT, bob.address));
+      const before = await usdc.balanceOf(bob.address);
+      const wsig = await signWithdraw(bob, FEE_VAULT, bob.address, FEE, await vault.nonces(bob.address), FAR_FUTURE);
+      await vault.connect(relayer).withdraw(FEE_VAULT, bob.address, FEE, 0n, FAR_FUTURE, wsig);
+      expect(await usdc.balanceOf(bob.address)).to.equal(before + FEE);
+      expect(await vault.balances(FEE_VAULT)).to.equal(0n);
+    });
+
+    it("fee credit ignores UNBOUND_VAULT_CAP (cannot brick withdrawals)", async () => {
+      const { vault, usdc, alice, bob, relayer, bindSigner, signBind, signWithdraw, FEE_VAULT } = await loadFixture(deployFixture);
+      // 把 fee vault 的餘額直接墊到 cap(用 deposit 到綁定後的大金庫模擬不行——直接存到 cap)
+      await vault.connect(bob).deposit(FEE_VAULT, usd(500)); // unbound fee vault at cap
+      const h = emailHashOf("alice@gmail.com");
+      await vault.connect(bob).deposit(h, HUNDRED);
+      await vault.bind(h, alice.address, await signBind(bindSigner, h, alice.address));
+      const sig = await signWithdraw(alice, h, alice.address, usd(10), 0n, FAR_FUTURE, FEE);
+      // fee vault 已達 $500 cap,但 fee 入帳不受 cap 限制 → withdraw 照常成功
+      await expect(vault.connect(relayer).withdraw(h, alice.address, usd(10), FEE, FAR_FUTURE, sig))
+        .to.not.be.reverted;
+      expect(await vault.balances(FEE_VAULT)).to.equal(usd(500) + FEE);
     });
   });
 
@@ -335,7 +417,7 @@ describe("EmailVaultUSDC (non-custodial, signature-based)", () => {
       const h = emailHashOf("big@x.com");
       await vault.bind(h, bob.address, await signBind(bindSigner, h, bob.address));
       await vault.connect(alice).deposit(h, usd(10000)); // at TVL cap
-      await vault.connect(relayer).withdraw(h, bob.address, usd(5000), FAR_FUTURE,
+      await vault.connect(relayer).withdraw(h, bob.address, usd(5000), 0n, FAR_FUTURE,
         await signWithdraw(bob, h, bob.address, usd(5000), 0n, FAR_FUTURE));
       await vault.connect(alice).deposit(h, usd(5000)); // room freed
       expect(await vault.totalBalance()).to.equal(usd(10000));
@@ -434,7 +516,7 @@ describe("EmailVaultUSDC (non-custodial, signature-based)", () => {
         const o = owners[i];
         const n = nonceByOwner[o.address] ?? (await vault.nonces(o.address));
         const amt = usd(25 * (i + 1));
-        await vault.connect(relayer).withdraw(hashes[i], o.address, amt, FAR_FUTURE,
+        await vault.connect(relayer).withdraw(hashes[i], o.address, amt, 0n, FAR_FUTURE,
           await signWithdraw(o, hashes[i], o.address, amt, n, FAR_FUTURE));
         tracked[hashes[i]] -= amt;
         nonceByOwner[o.address] = n + 1n;

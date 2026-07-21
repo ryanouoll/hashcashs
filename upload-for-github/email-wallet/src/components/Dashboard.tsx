@@ -12,6 +12,7 @@ import {
   requestBindTicket,
   VAULT_EIP712_DOMAIN,
   WITHDRAW_TYPES,
+  WITHDRAW_FEE,
 } from '../lib/emailVault'
 import { publicClient, makeWalletClient } from '../lib/viemClients'
 import { getPrivyUserEmail } from '../lib/privyUser'
@@ -28,7 +29,7 @@ function fmtUsd(microUsdc: bigint): string {
 
 // ─── 交易紀錄（走後端 /api/activity → Basescan，可靠不限流）────────────────
 type Activity = {
-  kind: 'deposit' | 'claim' | 'refund'
+  kind: 'deposit' | 'claim' | 'refund' | 'fee'
   amount: bigint
   txHash: string
   counterpartyHash?: string
@@ -39,6 +40,7 @@ const ACTIVITY_LABEL: Record<Activity['kind'], string> = {
   deposit: 'Received', // 存進這個金庫(自己 top-up 或別人付款)
   claim: 'Withdrawn',  // 本人簽名提領(claim 或 send 的第一步)
   refund: 'Refunded to sender',
+  fee: 'Network fee',
 }
 
 function relTime(secAgo: number): string {
@@ -126,7 +128,7 @@ function useOwnerWithdraw() {
         domain: VAULT_EIP712_DOMAIN(vault),
         types: WITHDRAW_TYPES,
         primaryType: 'Withdraw',
-        message: { emailHash: ticket.emailHash, to: dest, amount: amountWei, nonce, deadline },
+        message: { emailHash: ticket.emailHash, to: dest, amount: amountWei, fee: WITHDRAW_FEE, nonce, deadline },
       } as any,
       { uiOptions: { showWalletUIs: false }, address: ticket.owner },
     )
@@ -135,7 +137,7 @@ function useOwnerWithdraw() {
     const data = encodeFunctionData({
       abi: EMAIL_VAULT_ABI,
       functionName: 'bindAndWithdraw',
-      args: [ticket.emailHash, ticket.owner, ticket.signature, dest, amountWei, deadline, ownerSig as `0x${string}`],
+      args: [ticket.emailHash, ticket.owner, ticket.signature, dest, amountWei, WITHDRAW_FEE, deadline, ownerSig as `0x${string}`],
     })
     const { hash } = await sendTransaction(
       { to: vault, data, chainId: baseSepolia.id },
@@ -373,7 +375,7 @@ function SendModal({ open, fromEmail, balanceWei, onClose, onSuccess }: {
   function handleClose() { onClose(); setTimeout(reset, 250) }
 
   function fillMax() {
-    if (balanceWei !== null) setAmount(formatUnits(balanceWei, USDC_DECIMALS))
+    if (balanceWei !== null) setAmount(formatUnits(balanceWei > WITHDRAW_FEE ? balanceWei - WITHDRAW_FEE : 0n, USDC_DECIMALS))
   }
 
   const { sendTransaction } = useSendTransaction()
@@ -391,7 +393,7 @@ function SendModal({ open, fromEmail, balanceWei, onClose, onSuccess }: {
     if (amountWei <= 0n) { setStatus('Amount must be greater than 0.'); setIsError(true); return }
 
     if (balanceWei !== null && amountWei > balanceWei) {
-      setStatus('Amount exceeds your vault balance.'); setIsError(true); return
+      setStatus(`Amount plus the $${fmtUsd(WITHDRAW_FEE)} fee exceeds your balance.`); setIsError(true); return
     }
 
     setLoading(true)
@@ -498,7 +500,7 @@ function SendModal({ open, fromEmail, balanceWei, onClose, onSuccess }: {
                   ? <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" className="spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> Sending…</>
                   : 'Send'}
               </button>
-              <div className="modal-fineprint">Funds move instantly between vaults. Recipient can claim anytime.</div>
+              <div className="modal-fineprint">No ETH needed — a ${fmtUsd(WITHDRAW_FEE)} network fee is deducted from your balance. Recipient can claim anytime.</div>
             </div>
           </>
         ) : (
@@ -560,7 +562,7 @@ function ClaimModal({ open, email, walletAddress, balanceWei, walletsReady, onCl
   function handleClose() { onClose(); setTimeout(() => { setAmount(''); setStatus(''); setIsError(false); setLoading(false) }, 250) }
 
   function fillMax() {
-    if (balanceWei !== null) setAmount(formatUnits(balanceWei, USDC_DECIMALS))
+    if (balanceWei !== null) setAmount(formatUnits(balanceWei > WITHDRAW_FEE ? balanceWei - WITHDRAW_FEE : 0n, USDC_DECIMALS))
   }
 
   const ownerWithdraw = useOwnerWithdraw()
@@ -575,7 +577,7 @@ function ClaimModal({ open, email, walletAddress, balanceWei, walletsReady, onCl
     catch { setStatus('Invalid USD amount.'); setIsError(true); return }
     if (amountWei <= 0n) { setStatus('Amount must be greater than 0.'); setIsError(true); return }
     if (balanceWei !== null && amountWei > balanceWei) {
-      setStatus('Amount exceeds your vault balance.'); setIsError(true); return
+      setStatus(`Amount plus the $${fmtUsd(WITHDRAW_FEE)} fee exceeds your balance.`); setIsError(true); return
     }
 
     setLoading(true)
@@ -638,7 +640,7 @@ function ClaimModal({ open, email, walletAddress, balanceWei, walletsReady, onCl
               ? <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" className="spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> {status || 'Confirming…'}</>
               : 'Claim'}
           </button>
-          <div className="modal-fineprint">No gas needed — you authorize with a signature; the fee is sponsored.</div>
+          <div className="modal-fineprint">No ETH needed — a ${fmtUsd(WITHDRAW_FEE)} network fee is deducted from your balance.</div>
         </div>
       </div>
     </div>

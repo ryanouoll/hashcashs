@@ -11,8 +11,8 @@
 type Env = Record<string, never>
 
 // EmailVaultUSDC v2(非託管、簽名授權版)。deploy 後回填地址與起始 block。
-const VAULT = '0x103d9dEffc626C5F60C8842fbff608c68Ba5F218' // v2, deployed 2026-07-19
-const DEPLOY_BLOCK = 44352500
+const VAULT = '0xE16258Ad4D5B629170e1ABE0D58CBB4ddBa67Cf8' // v2.1 (USDC fee), deployed 2026-07-21
+const DEPLOY_BLOCK = 44437577
 const CHUNK = 49000
 
 // 多個 RPC fallback（依序試，第一個成功就用）
@@ -30,6 +30,8 @@ const TOPIC = {
   Withdrawn: '0xa6786aab7dbbc48b4b0387488b407bd81448030ab207b50bea7dbb5fbc1cd9eb',
   // Refunded(bytes32 indexed emailHash, address indexed depositor, uint256 amount)
   Refunded: '0xf552ca82e113ac3c539c3d617f29fcd19c172a0c75dad017555c9e109f7fe183',
+  // FeeCharged(bytes32 indexed emailHash, uint256 fee)
+  FeeCharged: '0x2194b05805488d1ae5dec3e2e79f37a4606b7f3aa1e808a97259abc18dc5148a',
 }
 
 function json(status: number, data: unknown, extra?: HeadersInit) {
@@ -107,7 +109,7 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
   const tsOf = (bnHex: string) => nowSec - (latest - Number(hexToBig(bnHex))) * 2 // Base ~2s/block
 
   type Item = {
-    kind: 'deposit' | 'claim' | 'refund'
+    kind: 'deposit' | 'claim' | 'refund' | 'fee'
     amount: string
     txHash: string
     timeStamp: number
@@ -128,6 +130,8 @@ export const onRequestGet: PagesFunction<Env> = async (ctx) => {
       out.push({ kind: 'claim', amount, txHash, timeStamp })
     } else if (topic0 === TOPIC.Refunded) {
       out.push({ kind: 'refund', amount, txHash, timeStamp })
+    } else if (topic0 === TOPIC.FeeCharged) {
+      out.push({ kind: 'fee', amount, txHash, timeStamp })
     }
   }
 
