@@ -63,6 +63,36 @@ export const EMAIL_VAULT_ABI = [
   },
   {
     type: 'function',
+    name: 'internalTransfer',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'fromHash', type: 'bytes32' },
+      { name: 'toHash', type: 'bytes32' },
+      { name: 'amount', type: 'uint256' },
+      { name: 'fee', type: 'uint256' },
+      { name: 'deadline', type: 'uint256' },
+      { name: 'ownerSig', type: 'bytes' },
+    ],
+    outputs: [],
+  },
+  {
+    type: 'function',
+    name: 'bindAndTransfer',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'fromHash', type: 'bytes32' },
+      { name: 'owner', type: 'address' },
+      { name: 'bindSig', type: 'bytes' },
+      { name: 'toHash', type: 'bytes32' },
+      { name: 'amount', type: 'uint256' },
+      { name: 'fee', type: 'uint256' },
+      { name: 'deadline', type: 'uint256' },
+      { name: 'ownerSig', type: 'bytes' },
+    ],
+    outputs: [],
+  },
+  {
+    type: 'function',
     name: 'MAX_FEE',
     stateMutability: 'view',
     inputs: [],
@@ -172,7 +202,7 @@ export const USDC_ABI = [
  * ⚠️ 不讀 Cloudflare env(build-vs-runtime 的坑)。升級合約直接改這常數。
  * 部署後由 ignition 回填。
  */
-const VAULT_BASE_SEPOLIA = '0xE16258Ad4D5B629170e1ABE0D58CBB4ddBa67Cf8' // v2.1 (USDC fee), deployed 2026-07-21
+const VAULT_BASE_SEPOLIA = '0xb1e110d0e06C4F50Dc2fBcB3602064202d20615b' // v2.2 (internal transfer + % fee), 2026-07-21
 
 export function getEmailVaultAddress(): `0x${string}` {
   return VAULT_BASE_SEPOLIA as `0x${string}`
@@ -207,12 +237,43 @@ export const WITHDRAW_TYPES = {
   ],
 } as const
 
+export const TRANSFER_TYPES = {
+  Transfer: [
+    { name: 'fromHash', type: 'bytes32' },
+    { name: 'toHash', type: 'bytes32' },
+    { name: 'amount', type: 'uint256' },
+    { name: 'fee', type: 'uint256' },
+    { name: 'nonce', type: 'uint256' },
+    { name: 'deadline', type: 'uint256' },
+  ],
+} as const
+
 /**
- * 每筆提領收的 USDC 手續費(gas 由平台代墊 ETH,用這個回收成本)。
- * 使用者「簽名裡就含這個數字」— relayer 不能多收;合約另有 MAX_FEE=$0.25 上限。
- * 改這個值不用重新部署合約。
+ * 比例手續費(USDC,gas 由平台代墊 ETH,用這個回收成本 + 拿融資前至少不虧)。
+ *
+ *   fee = clamp(pct × amount, FEE_FLOOR, FEE_CAP)
+ *
+ * - FEE_FLOOR:保證覆蓋單筆 gas 成本(站內轉帳 ~$0.006、外提 ~$0.02),$0.05 有安全邊際
+ * - FEE_CAP:= 合約 MAX_FEE($0.25),超過合約會 revert;大額也不會被多扣,使用者安心
+ * - 比例邏輯全在前端算,合約只驗上限 → 調費率不用重新部署合約
+ *
+ * ⚠️ 「不虧」只保證涵蓋『鏈上 gas』。Privy 的 embedded-wallet / 贊助方案可能另有
+ *    月費或每筆成本,那部分看你的 Privy 方案,不在合約層。
  */
-export const WITHDRAW_FEE = 50_000n // $0.05
+export const FEE_FLOOR = 50_000n // $0.05
+export const FEE_CAP = 250_000n // $0.25 (= 合約 MAX_FEE)
+const INTERNAL_FEE_BPS = 50n // 站內轉帳 0.5%
+const EXTERNAL_FEE_BPS = 100n // 外提 1%
+
+function clampFee(raw: bigint): bigint {
+  if (raw < FEE_FLOOR) return FEE_FLOOR
+  if (raw > FEE_CAP) return FEE_CAP
+  return raw
+}
+export function computeFee(amountWei: bigint, kind: 'internal' | 'external'): bigint {
+  const bps = kind === 'external' ? EXTERNAL_FEE_BPS : INTERNAL_FEE_BPS
+  return clampFee((amountWei * bps) / 10_000n)
+}
 
 /** 向後端要 Bind 票證(要帶 Privy access token) */
 export async function requestBindTicket(accessToken: string): Promise<{

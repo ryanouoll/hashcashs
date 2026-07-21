@@ -54,16 +54,28 @@ describe("EmailVaultUSDC (non-custodial, signature-based)", () => {
         { name: "deadline", type: "uint256" },
       ],
     };
+    const TRANSFER_TYPES = {
+      Transfer: [
+        { name: "fromHash", type: "bytes32" },
+        { name: "toHash", type: "bytes32" },
+        { name: "amount", type: "uint256" },
+        { name: "fee", type: "uint256" },
+        { name: "nonce", type: "uint256" },
+        { name: "deadline", type: "uint256" },
+      ],
+    };
 
     const signBind = (signer, emailHash, owner) =>
       signer.signTypedData(domain, BIND_TYPES, { emailHash, owner });
     // fee 放最後、預設 0 — 既有測試不用改,fee 測試再明確傳
     const signWithdraw = (signer, emailHash, to, amount, nonce, deadline, fee = 0n) =>
       signer.signTypedData(domain, WITHDRAW_TYPES, { emailHash, to, amount, fee, nonce, deadline });
+    const signTransfer = (signer, fromHash, toHash, amount, nonce, deadline, fee = 0n) =>
+      signer.signTypedData(domain, TRANSFER_TYPES, { fromHash, toHash, amount, fee, nonce, deadline });
 
     return {
       usdc, vault, deployer, bindSigner, alice, bob, relayer, mallory,
-      domain, signBind, signWithdraw, FEE_VAULT,
+      domain, signBind, signWithdraw, signTransfer, FEE_VAULT,
     };
   }
 
@@ -375,6 +387,104 @@ describe("EmailVaultUSDC (non-custodial, signature-based)", () => {
       await expect(vault.connect(relayer).withdraw(h, alice.address, usd(10), FEE, FAR_FUTURE, sig))
         .to.not.be.reverted;
       expect(await vault.balances(FEE_VAULT)).to.equal(usd(500) + FEE);
+    });
+  });
+
+  // ───────────────────────────── internal transfer ─────────────────────────────
+  describe("internalTransfer (vault → vault)", () => {
+    const FEE = 50_000n;
+
+    async function boundSender() {
+      const f = await loadFixture(deployFixture);
+      const from = emailHashOf("alice@gmail.com");
+      const to = emailHashOf("bob@gmail.com");
+      await f.vault.connect(f.bob).deposit(from, HUNDRED);
+      await f.vault.bind(from, f.alice.address, await f.signBind(f.bindSigner, from, f.alice.address));
+      return { ...f, from, to };
+    }
+
+    it("moves funds vault→vault; no USDC leaves; invariant holds", async () => {
+      const { vault, usdc, alice, relayer, signTransfer, from, to, FEE_VAULT } = await boundSender();
+      const heldBefore = await vault.totalUsdcHeld();
+      const sig = await signTransfer(alice, from, to, usd(30), 0n, FAR_FUTURE, FEE);
+      await expect(vault.connect(relayer).internalTransfer(from, to, usd(30), FEE, FAR_FUTURE, sig))
+        .to.emit(vault, "Transferred").withArgs(from, to, usd(30))
+        .to.emit(vault, "FeeCharged").withArgs(from, FEE);
+      expect(await vault.balances(from)).to.equal(HUNDRED - usd(30) - FEE);
+      expect(await vault.balances(to)).to.equal(usd(30));
+      expect(await vault.balances(FEE_VAULT)).to.equal(FEE);
+      // USDC 完全沒動 → totalUsdcHeld 不變、invariant 成立
+      expect(await vault.totalUsdcHeld()).to.equal(heldBefore);
+      expect(await usdc.balanceOf(await vault.getAddress())).to.equal(heldBefore);
+    });
+
+    it("only the fromHash owner can move funds (INVARIANT 1)", async () => {
+      const { vault, mallory, relayer, signTransfer, from, to } = await boundSender();
+      const sig = await signTransfer(mallory, from, to, usd(1), 0n, FAR_FUTURE, FEE);
+      await expect(vault.connect(relayer).internalTransfer(from, to, usd(1), FEE, FAR_FUTURE, sig))
+        .to.be.revertedWithCustomError(vault, "InvalidWithdrawSignature");
+    });
+
+    it("replay protected (nonce consumed)", async () => {
+      const { vault, alice, relayer, signTransfer, from, to } = await boundSender();
+      const sig = await signTransfer(alice, from, to, usd(10), 0n, FAR_FUTURE, FEE);
+      await vault.connect(relayer).internalTransfer(from, to, usd(10), FEE, FAR_FUTURE, sig);
+      await expect(vault.connect(relayer).internalTransfer(from, to, usd(10), FEE, FAR_FUTURE, sig))
+        .to.be.revertedWithCustomError(vault, "InvalidWithdrawSignature");
+    });
+
+    it("reverts: unbound sender, same vault, zero amount, fee too high, over balance", async () => {
+      const { vault, alice, relayer, signTransfer, from, to } = await boundSender();
+      const unbound = emailHashOf("nobody@x.com");
+      await expect(vault.connect(relayer).internalTransfer(unbound, to, usd(1), 0n, FAR_FUTURE,
+        await signTransfer(alice, unbound, to, usd(1), 0n, FAR_FUTURE))).to.be.revertedWithCustomError(vault, "NotBound");
+      await expect(vault.connect(relayer).internalTransfer(from, from, usd(1), 0n, FAR_FUTURE,
+        await signTransfer(alice, from, from, usd(1), 0n, FAR_FUTURE))).to.be.revertedWithCustomError(vault, "SameVault");
+      await expect(vault.connect(relayer).internalTransfer(from, to, 0n, 0n, FAR_FUTURE,
+        await signTransfer(alice, from, to, 0n, 0n, FAR_FUTURE))).to.be.revertedWithCustomError(vault, "ZeroAmount");
+      const tooHigh = (await vault.MAX_FEE()) + 1n;
+      await expect(vault.connect(relayer).internalTransfer(from, to, usd(1), tooHigh, FAR_FUTURE,
+        await signTransfer(alice, from, to, usd(1), 0n, FAR_FUTURE, tooHigh))).to.be.revertedWithCustomError(vault, "FeeTooHigh");
+      await expect(vault.connect(relayer).internalTransfer(from, to, HUNDRED, FEE, FAR_FUTURE,
+        await signTransfer(alice, from, to, HUNDRED, 0n, FAR_FUTURE, FEE))).to.be.revertedWithCustomError(vault, "InsufficientBalance");
+    });
+
+    it("enforces UNBOUND_VAULT_CAP on the destination", async () => {
+      const { vault, bob, alice, relayer, bindSigner, signBind, signTransfer } = await loadFixture(deployFixture);
+      const from = emailHashOf("rich@x.com");
+      const to = emailHashOf("target@x.com");
+      // 讓 from 有大額(綁定後無上限)
+      await vault.bind(from, alice.address, await signBind(bindSigner, from, alice.address));
+      await vault.connect(bob).deposit(from, usd(600));
+      await vault.connect(bob).deposit(to, usd(450)); // to 未綁定,已接近 $500 cap
+      const sig = await signTransfer(alice, from, to, usd(60), 0n, FAR_FUTURE, 0n);
+      await expect(vault.connect(relayer).internalTransfer(from, to, usd(60), 0n, FAR_FUTURE, sig))
+        .to.be.revertedWithCustomError(vault, "VaultCapExceeded");
+    });
+
+    it("bindAndTransfer binds sender then transfers atomically", async () => {
+      const { vault, alice, bob, relayer, bindSigner, signBind, signTransfer } = await loadFixture(deployFixture);
+      const from = emailHashOf("alice@gmail.com");
+      const to = emailHashOf("bob@gmail.com");
+      await vault.connect(bob).deposit(from, HUNDRED);
+      const bsig = await signBind(bindSigner, from, alice.address);
+      const tsig = await signTransfer(alice, from, to, usd(25), 0n, FAR_FUTURE, FEE);
+      await expect(vault.connect(relayer).bindAndTransfer(from, alice.address, bsig, to, usd(25), FEE, FAR_FUTURE, tsig))
+        .to.emit(vault, "Bound").withArgs(from, alice.address)
+        .to.emit(vault, "Transferred").withArgs(from, to, usd(25));
+      expect(await vault.balances(to)).to.equal(usd(25));
+    });
+
+    it("recipient can then claim the received funds to their wallet", async () => {
+      const { vault, usdc, alice, bob, relayer, bindSigner, signBind, signTransfer, signWithdraw, from, to } = await boundSender();
+      await vault.connect(relayer).internalTransfer(from, to, usd(30), FEE, FAR_FUTURE,
+        await signTransfer(alice, from, to, usd(30), 0n, FAR_FUTURE, FEE));
+      // bob 綁定 to、提領
+      await vault.bind(to, bob.address, await signBind(bindSigner, to, bob.address));
+      const before = await usdc.balanceOf(bob.address);
+      await vault.connect(relayer).withdraw(to, bob.address, usd(30), 0n, FAR_FUTURE,
+        await signWithdraw(bob, to, bob.address, usd(30), await vault.nonces(bob.address), FAR_FUTURE));
+      expect(await usdc.balanceOf(bob.address)).to.equal(before + usd(30));
     });
   });
 

@@ -77,10 +77,15 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
  *       anyone who can guess the plaintext (dictionary of common addresses). The
  *       DOMAIN_SALT prevents cross-contract rainbow tables but not targeted guessing.
  *
- *   (C) No internal email-to-email transfer exists (by design). Moving value
- *       between two emails = the owner withdraws to a wallet, then sends USDC
- *       normally. Keeping the contract from ever holding a "ledger transfer" path
- *       avoids any money-transmission-style internal balance reassignment.
+ *   (C) Internal vault-to-vault transfer (`internalTransfer`) IS supported, but
+ *       stays within the same non-custodial rules: it moves funds ONLY with the
+ *       fromHash owner's signature, no USDC leaves the contract, and there is no
+ *       admin path. It exists because withdraw-to-wallet + deposit-back costs ~4x
+ *       the gas for the same effect. NOTE (regulatory): an on-chain internal
+ *       ledger transfer between two identifiers is closer to "money movement on a
+ *       shared ledger" than a plain self-withdrawal; operators should weigh this
+ *       against their jurisdiction's money-transmission rules. It is signature-
+ *       authorized and non-custodial, but it is a deliberate product/legal choice.
  *
  *   (D) Refunds of UNCLAIMED deposits. If a vault is still unbound after
  *       REFUND_DELAY since a depositor's last deposit to it, that depositor may
@@ -164,6 +169,10 @@ contract EmailVaultUSDC is EIP712, ReentrancyGuard {
         keccak256(
             "Withdraw(bytes32 emailHash,address to,uint256 amount,uint256 fee,uint256 nonce,uint256 deadline)"
         );
+    bytes32 private constant TRANSFER_TYPEHASH =
+        keccak256(
+            "Transfer(bytes32 fromHash,bytes32 toHash,uint256 amount,uint256 fee,uint256 nonce,uint256 deadline)"
+        );
 
     event Deposited(bytes32 indexed emailHash, address indexed sender, uint256 amount);
     event Refunded(bytes32 indexed emailHash, address indexed depositor, uint256 amount);
@@ -174,6 +183,8 @@ contract EmailVaultUSDC is EIP712, ReentrancyGuard {
         address indexed to,
         uint256 amount
     );
+    /// @dev Internal vault-to-vault move. USDC never leaves the contract.
+    event Transferred(bytes32 indexed fromHash, bytes32 indexed toHash, uint256 amount);
     event FeeCharged(bytes32 indexed emailHash, uint256 fee);
 
     error ZeroAddress();
@@ -191,6 +202,7 @@ contract EmailVaultUSDC is EIP712, ReentrancyGuard {
     error AlreadyBound();
     error RefundTooEarly();
     error InsufficientDeposit();
+    error SameVault();
 
     /**
      * @param _usdc          USDC token. Base Sepolia: 0x036CbD53842c5426634e7929541eC2318f3dCF7e
@@ -381,6 +393,91 @@ contract EmailVaultUSDC is EIP712, ReentrancyGuard {
         usdc.safeTransfer(to, amount);
 
         emit Withdrawn(emailHash, owner, to, amount);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // INTERNAL TRANSFER (vault → vault; USDC never leaves the contract)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * @notice Move `amount` from `fromHash`'s vault to `toHash`'s vault, authorized
+     *         by the `fromHash` owner's EIP-712 signature. No USDC leaves the
+     *         contract — this is a pure ledger move, ~1/4 the gas of withdraw+deposit.
+     * @dev Same three invariants hold: only the fromHash owner can move their funds
+     *      (signature), no admin path, backend cannot move funds. `fee` works exactly
+     *      like withdraw's fee (owner-signed, <= MAX_FEE, credited to feeVaultHash).
+     */
+    function internalTransfer(
+        bytes32 fromHash,
+        bytes32 toHash,
+        uint256 amount,
+        uint256 fee,
+        uint256 deadline,
+        bytes calldata ownerSig
+    ) external nonReentrant {
+        _internalTransfer(fromHash, toHash, amount, fee, deadline, ownerSig);
+    }
+
+    /// @notice Bind `fromHash` then transfer in one tx (first-time sender).
+    function bindAndTransfer(
+        bytes32 fromHash,
+        address owner,
+        bytes calldata bindSig,
+        bytes32 toHash,
+        uint256 amount,
+        uint256 fee,
+        uint256 deadline,
+        bytes calldata ownerSig
+    ) external nonReentrant {
+        _bind(fromHash, owner, bindSig);
+        _internalTransfer(fromHash, toHash, amount, fee, deadline, ownerSig);
+    }
+
+    function _internalTransfer(
+        bytes32 fromHash,
+        bytes32 toHash,
+        uint256 amount,
+        uint256 fee,
+        uint256 deadline,
+        bytes calldata ownerSig
+    ) internal {
+        if (toHash == bytes32(0)) revert ZeroEmailHash();
+        if (toHash == fromHash) revert SameVault();
+        if (amount == 0) revert ZeroAmount();
+        if (fee > MAX_FEE) revert FeeTooHigh();
+        if (block.timestamp > deadline) revert Expired();
+
+        address owner = ownerOf[fromHash];
+        if (owner == address(0)) revert NotBound();
+        if (balances[fromHash] < amount + fee) revert InsufficientBalance();
+
+        // Destination cap: an UNBOUND recipient vault stays under UNBOUND_VAULT_CAP
+        // (same rule as deposit). The fee vault credit below is exempt, as elsewhere.
+        if (ownerOf[toHash] == address(0) && balances[toHash] + amount > UNBOUND_VAULT_CAP) {
+            revert VaultCapExceeded();
+        }
+
+        uint256 nonce = nonces[owner];
+        bytes32 structHash = keccak256(
+            abi.encode(TRANSFER_TYPEHASH, fromHash, toHash, amount, fee, nonce, deadline)
+        );
+        bytes32 digest = _hashTypedDataV4(structHash);
+        if (ECDSA.recover(digest, ownerSig) != owner) revert InvalidWithdrawSignature();
+
+        // Effects only — no external interaction, so no token transfer to guard.
+        unchecked {
+            nonces[owner] = nonce + 1;
+        }
+        balances[fromHash] -= amount + fee;
+        balances[toHash] += amount;
+        // totalBalance unchanged: amount moves vault→vault, fee moves vault→feeVault;
+        // USDC never leaves, so totalUsdcHeld stays equal to sum(balances).
+        if (fee > 0) {
+            balances[feeVaultHash] += fee;
+            emit FeeCharged(fromHash, fee);
+        }
+
+        emit Transferred(fromHash, toHash, amount);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

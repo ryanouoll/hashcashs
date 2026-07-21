@@ -12,7 +12,9 @@ import {
   requestBindTicket,
   VAULT_EIP712_DOMAIN,
   WITHDRAW_TYPES,
-  WITHDRAW_FEE,
+  TRANSFER_TYPES,
+  computeFee,
+  FEE_FLOOR,
 } from '../lib/emailVault'
 import { publicClient, makeWalletClient } from '../lib/viemClients'
 import { getPrivyUserEmail } from '../lib/privyUser'
@@ -29,7 +31,7 @@ function fmtUsd(microUsdc: bigint): string {
 
 // ─── 交易紀錄（走後端 /api/activity → Basescan，可靠不限流）────────────────
 type Activity = {
-  kind: 'deposit' | 'claim' | 'refund' | 'fee'
+  kind: 'deposit' | 'claim' | 'refund' | 'fee' | 'send' | 'receive'
   amount: bigint
   txHash: string
   counterpartyHash?: string
@@ -37,11 +39,16 @@ type Activity = {
 }
 
 const ACTIVITY_LABEL: Record<Activity['kind'], string> = {
-  deposit: 'Received', // 存進這個金庫(自己 top-up 或別人付款)
-  claim: 'Withdrawn',  // 本人簽名提領(claim 或 send 的第一步)
+  deposit: 'Deposited',
+  receive: 'Received',
+  send: 'Sent',
+  claim: 'Withdrawn',
   refund: 'Refunded to sender',
   fee: 'Network fee',
 }
+
+// 進帳(綠色 ↓ +)的種類
+const INCOMING = new Set<Activity['kind']>(['deposit', 'receive'])
 
 function relTime(secAgo: number): string {
   if (secAgo < 0) secAgo = 0
@@ -122,9 +129,9 @@ function useOwnerWithdraw() {
     })) as bigint
     const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600)
 
+    const fee = computeFee(amountWei, 'external')
     onStatus?.('Authorizing…')
-    // Privy 內部會 JSON.stringify typed data → BigInt 會炸("Do not know how to
-    // serialize a BigInt")。EIP-712 的 uint256 欄位用字串表示,值完全相同。
+    // Privy 內部會 JSON.stringify typed data → BigInt 會炸。uint256 欄位用字串表示,值相同。
     const { signature: ownerSig } = await signTypedData(
       {
         domain: VAULT_EIP712_DOMAIN(vault),
@@ -134,7 +141,7 @@ function useOwnerWithdraw() {
           emailHash: ticket.emailHash,
           to: dest,
           amount: amountWei.toString(),
-          fee: WITHDRAW_FEE.toString(),
+          fee: fee.toString(),
           nonce: nonce.toString(),
           deadline: deadline.toString(),
         },
@@ -146,7 +153,7 @@ function useOwnerWithdraw() {
     const data = encodeFunctionData({
       abi: EMAIL_VAULT_ABI,
       functionName: 'bindAndWithdraw',
-      args: [ticket.emailHash, ticket.owner, ticket.signature, dest, amountWei, WITHDRAW_FEE, deadline, ownerSig as `0x${string}`],
+      args: [ticket.emailHash, ticket.owner, ticket.signature, dest, amountWei, fee, deadline, ownerSig as `0x${string}`],
     })
     const { hash } = await sendTransaction(
       { to: vault, data, chainId: baseSepolia.id },
@@ -155,6 +162,67 @@ function useOwnerWithdraw() {
     onStatus?.('Waiting for confirmation…')
     await (publicClient as any).waitForTransactionReceipt({ hash, timeout: 90_000 })
     return { hash, owner: ticket.owner }
+  }, [getAccessToken, signTypedData, sendTransaction])
+}
+
+/**
+ * 站內轉帳(gmail→gmail):本人簽名一次 → bindAndTransfer 一筆交易,
+ * USDC 完全不離開合約(比舊的「提+存」省 ~77% gas)。收比例手續費。
+ */
+function useOwnerTransfer() {
+  const { getAccessToken } = usePrivy()
+  const { signTypedData } = useSignTypedData()
+  const { sendTransaction } = useSendTransaction()
+
+  return useCallback(async ({ toHash, amountWei, onStatus }: {
+    toHash: `0x${string}`
+    amountWei: bigint
+    onStatus?: (s: string) => void
+  }): Promise<{ hash: `0x${string}` }> => {
+    const vault = getEmailVaultAddress()
+
+    onStatus?.('Verifying your account…')
+    const token = await getAccessToken()
+    if (!token) throw new Error('Not signed in. Please log in again.')
+    const ticket = await requestBindTicket(token)
+
+    const nonce = (await (publicClient as any).readContract({
+      address: vault, abi: EMAIL_VAULT_ABI, functionName: 'nonces', args: [ticket.owner],
+    })) as bigint
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600)
+    const fee = computeFee(amountWei, 'internal')
+
+    onStatus?.('Authorizing…')
+    const { signature: ownerSig } = await signTypedData(
+      {
+        domain: VAULT_EIP712_DOMAIN(vault),
+        types: TRANSFER_TYPES,
+        primaryType: 'Transfer',
+        message: {
+          fromHash: ticket.emailHash,
+          toHash,
+          amount: amountWei.toString(),
+          fee: fee.toString(),
+          nonce: nonce.toString(),
+          deadline: deadline.toString(),
+        },
+      } as any,
+      { uiOptions: { showWalletUIs: false }, address: ticket.owner },
+    )
+
+    onStatus?.('Sending…')
+    const data = encodeFunctionData({
+      abi: EMAIL_VAULT_ABI,
+      functionName: 'bindAndTransfer',
+      args: [ticket.emailHash, ticket.owner, ticket.signature, toHash, amountWei, fee, deadline, ownerSig as `0x${string}`],
+    })
+    const { hash } = await sendTransaction(
+      { to: vault, data, chainId: baseSepolia.id },
+      { sponsor: true, uiOptions: { showWalletUIs: false }, address: ticket.owner },
+    )
+    onStatus?.('Waiting for confirmation…')
+    await (publicClient as any).waitForTransactionReceipt({ hash, timeout: 90_000 })
+    return { hash }
   }, [getAccessToken, signTypedData, sendTransaction])
 }
 
@@ -384,11 +452,12 @@ function SendModal({ open, fromEmail, balanceWei, onClose, onSuccess }: {
   function handleClose() { onClose(); setTimeout(reset, 250) }
 
   function fillMax() {
-    if (balanceWei !== null) setAmount(formatUnits(balanceWei > WITHDRAW_FEE ? balanceWei - WITHDRAW_FEE : 0n, USDC_DECIMALS))
+    if (balanceWei === null) return
+    const fee = computeFee(balanceWei, 'internal')
+    setAmount(formatUnits(balanceWei > fee ? balanceWei - fee : 0n, USDC_DECIMALS))
   }
 
-  const { sendTransaction } = useSendTransaction()
-  const ownerWithdraw = useOwnerWithdraw()
+  const ownerTransfer = useOwnerTransfer()
 
   async function onSend() {
     setStatus(''); setIsError(false)
@@ -401,52 +470,21 @@ function SendModal({ open, fromEmail, balanceWei, onClose, onSuccess }: {
     catch { setStatus('Invalid USD amount.'); setIsError(true); return }
     if (amountWei <= 0n) { setStatus('Amount must be greater than 0.'); setIsError(true); return }
 
-    if (balanceWei !== null && amountWei > balanceWei) {
-      setStatus(`Amount plus the $${fmtUsd(WITHDRAW_FEE)} fee exceeds your balance.`); setIsError(true); return
+    const fee = computeFee(amountWei, 'internal')
+    if (balanceWei !== null && amountWei + fee > balanceWei) {
+      setStatus(`Amount plus the $${fmtUsd(fee)} fee exceeds your balance.`); setIsError(true); return
     }
 
     setLoading(true)
     try {
       const vault = getEmailVaultAddress()
-      const usdc = getUsdcAddress()
 
-      // v2 非託管:合約沒有內部 email→email 轉帳(那正是舊漏洞)。
-      // Send = ①本人簽名把錢提到自己的 embedded wallet → ②再存進對方的金庫。
-      // 兩步都由 Privy 代付 gas,零彈窗,UX 不變。
-
+      // v2.2:站內轉帳一筆交易(bindAndTransfer),USDC 不離開合約,gas 代付、零彈窗。
       // 0. 對方是未綁定金庫的話,先檢查 $500 上限
       const capMsg = await checkUnboundCap(vault, toHash as `0x${string}`, amountWei)
       if (capMsg) { setStatus(capMsg); setIsError(true); setLoading(false); return }
 
-      // 1. 提領到自己的 embedded wallet(bind + withdraw,一筆交易,gas 代付)
-      const { owner } = await ownerWithdraw({ amountWei, onStatus: setStatus })
-
-      // 2. embedded wallet 對 vault 的 USDC allowance 不足就先 approve(infinite,一次性)
-      const allowance = (await (publicClient as any).readContract({
-        address: usdc, abi: USDC_ABI, functionName: 'allowance', args: [owner, vault],
-      })) as bigint
-      if (allowance < amountWei) {
-        setStatus('One-time setup…')
-        const approveData = encodeFunctionData({
-          abi: USDC_ABI, functionName: 'approve', args: [vault, (1n << 256n) - 1n],
-        })
-        const { hash: approveHash } = await sendTransaction(
-          { to: usdc, data: approveData, chainId: baseSepolia.id },
-          { sponsor: true, uiOptions: { showWalletUIs: false }, address: owner },
-        )
-        await (publicClient as any).waitForTransactionReceipt({ hash: approveHash, timeout: 90_000 })
-      }
-
-      // 3. 存進對方的金庫
-      setStatus('Delivering…')
-      const depositData = encodeFunctionData({
-        abi: EMAIL_VAULT_ABI, functionName: 'deposit', args: [toHash as `0x${string}`, amountWei],
-      })
-      const { hash } = await sendTransaction(
-        { to: vault, data: depositData, chainId: baseSepolia.id },
-        { sponsor: true, uiOptions: { showWalletUIs: false }, address: owner },
-      )
-      await (publicClient as any).waitForTransactionReceipt({ hash, timeout: 90_000 })
+      const { hash } = await ownerTransfer({ toHash: toHash as `0x${string}`, amountWei, onStatus: setStatus })
 
       setTxHash(hash)
       void sendDepositEmailNotification({
@@ -471,7 +509,7 @@ function SendModal({ open, fromEmail, balanceWei, onClose, onSuccess }: {
             <div className="modal-head">
               <div>
                 <h3>Send</h3>
-                <p>Vault-to-vault transfer. No wallet pop-up — gas is sponsored.</p>
+                <p>Instant transfer to another email. No wallet pop-up — gas is sponsored.</p>
               </div>
               <button className="modal-close" onClick={handleClose}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
@@ -509,7 +547,7 @@ function SendModal({ open, fromEmail, balanceWei, onClose, onSuccess }: {
                   ? <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" className="spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> Sending…</>
                   : 'Send'}
               </button>
-              <div className="modal-fineprint">No ETH needed — a ${fmtUsd(WITHDRAW_FEE)} network fee is deducted from your balance. Recipient can claim anytime.</div>
+              <div className="modal-fineprint">No ETH needed — a small network fee (0.5%, min ${fmtUsd(FEE_FLOOR)}) is deducted from your balance. Recipient can claim anytime.</div>
             </div>
           </>
         ) : (
@@ -571,7 +609,9 @@ function ClaimModal({ open, email, walletAddress, balanceWei, walletsReady, onCl
   function handleClose() { onClose(); setTimeout(() => { setAmount(''); setStatus(''); setIsError(false); setLoading(false) }, 250) }
 
   function fillMax() {
-    if (balanceWei !== null) setAmount(formatUnits(balanceWei > WITHDRAW_FEE ? balanceWei - WITHDRAW_FEE : 0n, USDC_DECIMALS))
+    if (balanceWei === null) return
+    const fee = computeFee(balanceWei, 'external')
+    setAmount(formatUnits(balanceWei > fee ? balanceWei - fee : 0n, USDC_DECIMALS))
   }
 
   const ownerWithdraw = useOwnerWithdraw()
@@ -586,7 +626,7 @@ function ClaimModal({ open, email, walletAddress, balanceWei, walletsReady, onCl
     catch { setStatus('Invalid USD amount.'); setIsError(true); return }
     if (amountWei <= 0n) { setStatus('Amount must be greater than 0.'); setIsError(true); return }
     if (balanceWei !== null && amountWei > balanceWei) {
-      setStatus(`Amount plus the $${fmtUsd(WITHDRAW_FEE)} fee exceeds your balance.`); setIsError(true); return
+      setStatus(`Amount plus the $${fmtUsd(computeFee(amountWei, 'external'))} fee exceeds your balance.`); setIsError(true); return
     }
 
     setLoading(true)
@@ -649,7 +689,7 @@ function ClaimModal({ open, email, walletAddress, balanceWei, walletsReady, onCl
               ? <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" className="spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> {status || 'Confirming…'}</>
               : 'Claim'}
           </button>
-          <div className="modal-fineprint">No ETH needed — a ${fmtUsd(WITHDRAW_FEE)} network fee is deducted from your balance.</div>
+          <div className="modal-fineprint">No ETH needed — a small network fee (1%, min ${fmtUsd(FEE_FLOOR)}) is deducted from your balance.</div>
         </div>
       </div>
     </div>
@@ -844,8 +884,8 @@ export function Dashboard() {
                 {activity.map((a) => (
                   <a key={a.txHash + a.kind} className="activity-row"
                     href={`https://sepolia.basescan.org/tx/${a.txHash}`} target="_blank" rel="noreferrer">
-                    <span className={`activity-icon ${a.kind === 'deposit' ? 'in' : 'out'}`}>
-                      {a.kind === 'deposit' ? '↓' : '↑'}
+                    <span className={`activity-icon ${INCOMING.has(a.kind) ? 'in' : 'out'}`}>
+                      {INCOMING.has(a.kind) ? '↓' : '↑'}
                     </span>
                     <span className="activity-main">
                       <span className="activity-title">{ACTIVITY_LABEL[a.kind]}</span>
@@ -855,8 +895,8 @@ export function Dashboard() {
                           : relTime(nowSec - a.ts)}
                       </span>
                     </span>
-                    <span className={`activity-amount ${a.kind === 'deposit' ? 'in' : 'out'}`}>
-                      {a.kind === 'deposit' ? '+' : '−'}${fmtUsd(a.amount)}
+                    <span className={`activity-amount ${INCOMING.has(a.kind) ? 'in' : 'out'}`}>
+                      {INCOMING.has(a.kind) ? '+' : '−'}${fmtUsd(a.amount)}
                     </span>
                   </a>
                 ))}

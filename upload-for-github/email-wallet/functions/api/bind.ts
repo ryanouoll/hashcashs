@@ -29,7 +29,7 @@ interface Env {
 }
 
 // 部署後回填(deploy 之後這裡會被更新成新合約地址)
-const DEFAULT_VAULT_ADDRESS = '0xE16258Ad4D5B629170e1ABE0D58CBB4ddBa67Cf8' // v2.1 (USDC fee), deployed 2026-07-21
+const DEFAULT_VAULT_ADDRESS = '0xb1e110d0e06C4F50Dc2fBcB3602064202d20615b' // v2.2 (internal transfer + % fee), 2026-07-21
 const CHAIN_ID = 84532 // Base Sepolia
 
 // email → salted commitment。前端 src/lib/emailVault.ts 的 emailToHash 必須完全一致。
