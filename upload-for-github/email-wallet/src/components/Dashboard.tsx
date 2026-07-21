@@ -730,7 +730,6 @@ export function Dashboard() {
       <nav className="nav">
         <div className="nav-inner">
           <div className="brand">
-            <span className="brand-mark" />
             <span>hashcash</span>
           </div>
           <div className="nav-right">

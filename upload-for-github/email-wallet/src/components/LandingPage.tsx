@@ -18,7 +18,6 @@ export function LandingPage() {
       <nav className="nav">
         <div className="nav-inner">
           <div className="brand">
-            <span className="brand-mark" />
             <span>hashcash</span>
           </div>
           <div className="nav-links">
@@ -43,11 +42,6 @@ export function LandingPage() {
         <div className="hero-orb-2" />
         <div className="hero-inner">
           <div>
-            <div className="hero-eyebrow">
-              <span className="hero-eyebrow-dot" />
-              Live on
-              <span className="mono" style={{ fontSize: 12, color: 'var(--mute)' }}>Base Sepolia</span>
-            </div>
             <h1 className="hero-headline h-display">
               Send crypto to anyone.<br />Just their <span className="accent">email.</span>
             </h1>
@@ -211,7 +205,6 @@ export function LandingPage() {
       <footer className="footer">
         <div className="footer-inner">
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span className="brand-mark" />
             <span style={{ fontWeight: 600, color: 'var(--ink)' }}>hashcash</span>
             <span style={{ color: 'var(--mute)', marginLeft: 8 }}>© 2026</span>
           </div>
