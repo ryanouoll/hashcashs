@@ -123,12 +123,21 @@ function useOwnerWithdraw() {
     const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600)
 
     onStatus?.('Authorizing…')
+    // Privy 內部會 JSON.stringify typed data → BigInt 會炸("Do not know how to
+    // serialize a BigInt")。EIP-712 的 uint256 欄位用字串表示,值完全相同。
     const { signature: ownerSig } = await signTypedData(
       {
         domain: VAULT_EIP712_DOMAIN(vault),
         types: WITHDRAW_TYPES,
         primaryType: 'Withdraw',
-        message: { emailHash: ticket.emailHash, to: dest, amount: amountWei, fee: WITHDRAW_FEE, nonce, deadline },
+        message: {
+          emailHash: ticket.emailHash,
+          to: dest,
+          amount: amountWei.toString(),
+          fee: WITHDRAW_FEE.toString(),
+          nonce: nonce.toString(),
+          deadline: deadline.toString(),
+        },
       } as any,
       { uiOptions: { showWalletUIs: false }, address: ticket.owner },
     )
